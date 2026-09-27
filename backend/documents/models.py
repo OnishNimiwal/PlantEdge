@@ -14,6 +14,8 @@ class Document(models.Model):
     ocr_pages_skipped = models.PositiveIntegerField(default=0)  # scanned pages beyond OCR_MAX_PDF_PAGES
     truncated = models.BooleanField(default=False)  # text cut at DOCUMENT_MAX_CHARS
     original_chars = models.PositiveIntegerField(default=0)
+    ocr_lang = models.CharField(max_length=10, blank=True)       # PaddleOCR language used
+    complex_layout = models.BooleanField(default=False)           # table / multi-column detected
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

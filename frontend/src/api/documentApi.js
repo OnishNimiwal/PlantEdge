@@ -5,9 +5,20 @@
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
-export async function uploadDocument(file) {
+export async function getOCRConfig() {
+  try {
+    const response = await fetch(`${API_BASE}/api/documents/ocr-config/`);
+    if (!response.ok) return { languages: [], default: 'en' };
+    return await response.json();
+  } catch {
+    return { languages: [], default: 'en' };
+  }
+}
+
+export async function uploadDocument(file, ocrLang) {
   const formData = new FormData();
   formData.append('file', file);
+  if (ocrLang) formData.append('ocr_lang', ocrLang);
 
   try {
     const response = await fetch(`${API_BASE}/api/documents/upload/`, {

@@ -40,7 +40,7 @@ def validate_file_extension(filename: str) -> str:
 def _page_has_text(text: str) -> bool:
     return len("".join(text.split())) >= MIN_PAGE_TEXT_CHARS
 
-def _extract_pdf(file_bytes: bytes) -> dict:
+def _extract_pdf(file_bytes: bytes, lang: str = None) -> dict:
     """Text layer where present; local OCR for scanned (image-only) pages."""
     max_ocr_pages = getattr(settings, "OCR_MAX_PDF_PAGES", 20)
     max_pages = getattr(settings, "DOCUMENT_MAX_PDF_PAGES", 300)
@@ -56,6 +56,7 @@ def _extract_pdf(file_bytes: bytes) -> dict:
 
         pages = []  # (page_number, text, via_ocr)
         ocr_confidences = []
+        complex_layout = False
         skipped_pages = []
         for page in doc:
             page_text = page.get_text("text").strip()
@@ -63,10 +64,11 @@ def _extract_pdf(file_bytes: bytes) -> dict:
                 pages.append((page.number + 1, page_text, False))
             elif len(ocr_confidences) < max_ocr_pages:
                 try:
-                    result = ocr.ocr_pdf_page(page)
+                    result = ocr.ocr_pdf_page(page, lang)
                 except ocr.OCRError as exc:
                     raise DocumentExtractionError(str(exc)) from exc
                 ocr_confidences.append(result["confidence"])
+                complex_layout = complex_layout or result.get("complex_layout", False)
                 pages.append((page.number + 1, result["text"], True))
             else:
                 skipped_pages.append(page.number + 1)
@@ -95,13 +97,14 @@ def _extract_pdf(file_bytes: bytes) -> dict:
         "ocr_confidence": round(sum(ocr_confidences) / ocr_pages, 3) if ocr_pages else None,
         "page_count": page_count,
         "ocr_pages_skipped": len(skipped_pages),
+        "complex_layout": complex_layout,
     }
 
-def _extract_image(file_bytes: bytes, file_type: str) -> dict:
+def _extract_image(file_bytes: bytes, file_type: str, lang: str = None) -> dict:
     if not file_bytes.startswith(IMAGE_SIGNATURES[file_type]):
         raise DocumentExtractionError(f"The uploaded file is not a valid {file_type} image.")
     try:
-        result = ocr.ocr_image(file_bytes)
+        result = ocr.ocr_image(file_bytes, lang)
     except ocr.OCRError as exc:
         raise DocumentExtractionError(str(exc)) from exc
     return {
@@ -111,18 +114,21 @@ def _extract_image(file_bytes: bytes, file_type: str) -> dict:
         "ocr_confidence": result["confidence"],
         "page_count": 1,
         "ocr_pages_skipped": 0,
+        "complex_layout": result.get("complex_layout", False),
     }
 
-def extract_document(file_obj, file_type: str) -> dict:
+def extract_document(file_obj, file_type: str, lang: str = None) -> dict:
     """
     Extracts text from an uploaded file object.
     PDF: PyMuPDF text layer, with local PaddleOCR for scanned pages.
     PNG/JPG: local PaddleOCR. TXT: decoded directly.
-    Returns {"text", "method", "ocr_pages", "ocr_confidence"}.
+    `lang` is the OCR language (one of settings.OCR_ALLOWED_LANGS; default OCR_LANG).
+    Returns {"text", "method", "ocr_pages", "ocr_confidence", "page_count",
+             "ocr_pages_skipped", "complex_layout", "truncated", "original_chars"}.
     Enforces a strict 50,000 character limit.
     """
     result = {"text": "", "method": "text", "ocr_pages": 0, "ocr_confidence": None,
-              "page_count": 0, "ocr_pages_skipped": 0}
+              "page_count": 0, "ocr_pages_skipped": 0, "complex_layout": False}
     file_obj.seek(0)
 
     if file_type == 'PDF':
@@ -131,7 +137,7 @@ def extract_document(file_obj, file_type: str) -> dict:
             file_bytes = file_obj.read()
             if not file_bytes:
                 raise DocumentExtractionError("The uploaded PDF file is empty.")
-            result = _extract_pdf(file_bytes)
+            result = _extract_pdf(file_bytes, lang)
         except pymupdf.FileDataError as exc:
             raise DocumentExtractionError(f"Corrupted or invalid PDF file: {str(exc)}") from exc
         except DocumentExtractionError:
@@ -144,7 +150,7 @@ def extract_document(file_obj, file_type: str) -> dict:
         if not file_bytes:
             raise DocumentExtractionError("The uploaded image file is empty.")
         try:
-            result = _extract_image(file_bytes, file_type)
+            result = _extract_image(file_bytes, file_type, lang)
         except DocumentExtractionError:
             raise
         except Exception as exc:

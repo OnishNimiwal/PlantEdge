@@ -163,13 +163,26 @@ MAX_IMAGES_PER_MESSAGE = int(os.getenv('MAX_IMAGES_PER_MESSAGE', '3'))
 DOCUMENT_MAX_CHARS = int(os.getenv('DOCUMENT_MAX_CHARS', '50000'))
 DOCUMENT_MAX_PDF_PAGES = int(os.getenv('DOCUMENT_MAX_PDF_PAGES', '300'))
 
-# Local OCR (PaddleOCR on CPU; see documents/ocr.py)
+# Local OCR (PaddleOCR on CPU; see documents/ocr.py and samples/ocr_benchmark.py)
+def _env_bool(name, default=False):
+    return os.getenv(name, str(default)).strip().lower() in ('true', '1', 'yes')
+
 OCR_LANG = os.getenv('OCR_LANG', 'en')
+# Languages users may choose per upload (PaddleOCR codes: en, hi, mr, ka, ta, te, ml, ch, latin).
+# Each extra language downloads its own recognition model once, then runs offline.
+OCR_ALLOWED_LANGS = [l.strip() for l in os.getenv('OCR_ALLOWED_LANGS', OCR_LANG).split(',') if l.strip()]
+# server = PaddleOCR default models (most accurate, ~25 s/page on CPU); mobile = ~4x faster
+OCR_MODEL_PROFILE = os.getenv('OCR_MODEL_PROFILE', 'server')
+# Optional preprocessing models (see samples/ocr_benchmark.py). Page-orientation correction
+# is on: it fixed 90/180-degree rotated scans (accuracy 0.15 -> 1.00) at ~no speed cost.
+# Text-line orientation did not help; unwarping targets photographed curved pages.
+OCR_USE_DOC_ORIENTATION = _env_bool('OCR_USE_DOC_ORIENTATION', True)
+OCR_USE_TEXTLINE_ORIENTATION = _env_bool('OCR_USE_TEXTLINE_ORIENTATION')
+OCR_USE_UNWARPING = _env_bool('OCR_USE_UNWARPING')
 OCR_PDF_DPI = int(os.getenv('OCR_PDF_DPI', '200'))
 OCR_MAX_PDF_PAGES = int(os.getenv('OCR_MAX_PDF_PAGES', '20'))
 OCR_CPU_THREADS = int(os.getenv('OCR_CPU_THREADS', '8'))
-# Optional explicit PaddleOCR model names, e.g. PP-OCRv5_mobile_det / en_PP-OCRv5_mobile_rec
-# (about 4x faster on CPU, slightly less accurate). Empty = PaddleOCR default for OCR_LANG.
+# Optional explicit PaddleOCR model names (override OCR_MODEL_PROFILE). Empty = profile default.
 OCR_DET_MODEL = os.getenv('OCR_DET_MODEL', '')
 OCR_REC_MODEL = os.getenv('OCR_REC_MODEL', '')
 

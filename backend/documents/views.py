@@ -25,6 +25,7 @@ from .services import (
     OllamaServiceError,
 )
 from .generators import generate_document_docx_report
+from .ocr import allowed_languages, default_language, LANGUAGE_NAMES
 
 class DocumentUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
@@ -55,7 +56,8 @@ class DocumentUploadView(APIView):
 
         # Extract text: PyMuPDF text layer, TXT reader, or local PaddleOCR for scans/images
         try:
-            extraction = extract_document(uploaded_file, file_type)
+            ocr_lang = serializer.validated_data.get("ocr_lang") or default_language()
+            extraction = extract_document(uploaded_file, file_type, lang=ocr_lang)
         except DocumentExtractionError as exc:
             return Response(
                 {"success": False, "error": str(exc)},
@@ -83,6 +85,8 @@ class DocumentUploadView(APIView):
             ocr_pages_skipped=extraction["ocr_pages_skipped"],
             truncated=extraction["truncated"],
             original_chars=extraction["original_chars"],
+            ocr_lang=ocr_lang if extraction["ocr_pages"] else "",
+            complex_layout=extraction["complex_layout"],
         )
 
         return Response(
@@ -173,3 +177,13 @@ class DocumentGenerateReportView(APIView):
         response["Content-Disposition"] = f'attachment; filename="{download_filename}"'
         response["Access-Control-Expose-Headers"] = "Content-Disposition"
         return response
+
+
+class OCRConfigView(APIView):
+    """OCR languages users may choose (settings.OCR_ALLOWED_LANGS) and the default."""
+
+    def get(self, request):
+        return Response({
+            "languages": [{"code": c, "name": LANGUAGE_NAMES[c]} for c in allowed_languages()],
+            "default": default_language(),
+        })

@@ -521,3 +521,66 @@ class DocumentConversationTests(APITestCase):
         self.client.post(reverse("document-ask", kwargs={"pk": other.id}),
                          {"question": "Anything?", "conversation_id": conv_id}, format="json")
         self.assertEqual(len(mock_post.call_args.kwargs["json"]["messages"]), 2)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class OCRConfigurationTests(APITestCase):
+    """Phase D: OCR profiles, preprocessing, languages, layout detection (L15, L18, L19, L21)."""
+
+    def test_default_engine_config(self):
+        from .ocr import engine_config
+        cfg = engine_config("en")
+        self.assertEqual(cfg["lang"], "en")
+        self.assertTrue(cfg["use_doc_orientation_classify"])   # fixes rotated scans
+        self.assertFalse(cfg["use_textline_orientation"])
+        self.assertFalse(cfg["enable_mkldnn"])
+        self.assertEqual(cfg["device"], "cpu")
+
+    @override_settings(OCR_MODEL_PROFILE="mobile")
+    def test_mobile_profile(self):
+        from .ocr import engine_config
+        cfg = engine_config("en")
+        self.assertEqual(cfg["text_detection_model_name"], "PP-OCRv5_mobile_det")
+        self.assertEqual(cfg["text_recognition_model_name"], "en_PP-OCRv5_mobile_rec")
+        self.assertEqual(engine_config("ka")["lang"], "ka")  # no mobile variant -> server/lang default
+
+    @override_settings(OCR_DET_MODEL="X_det", OCR_REC_MODEL="X_rec", OCR_MODEL_PROFILE="mobile")
+    def test_explicit_models_override_profile(self):
+        from .ocr import engine_config
+        cfg = engine_config("en")
+        self.assertEqual((cfg["text_detection_model_name"], cfg["text_recognition_model_name"]), ("X_det", "X_rec"))
+
+    @override_settings(OCR_ALLOWED_LANGS=["en", "ka"], OCR_LANG="en")
+    @patch("documents.ocr.ocr_image", return_value=OCR_RESULT)
+    def test_upload_language_choice(self, mock_ocr):
+        url = reverse("document-upload")
+        ok = self.client.post(url, {"file": SimpleUploadedFile("k.png", make_png_bytes(), content_type="image/png"),
+                                    "ocr_lang": "ka"}, format="multipart")
+        self.assertEqual(ok.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(ok.data["document"]["ocr_lang"], "ka")
+        self.assertEqual(mock_ocr.call_args.args[1], "ka")
+        bad = self.client.post(url, {"file": SimpleUploadedFile("k.png", make_png_bytes(), content_type="image/png"),
+                                     "ocr_lang": "fr"}, format="multipart")
+        self.assertEqual(bad.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("not enabled", bad.data["error"])
+        cfg = self.client.get(reverse("document-ocr-config")).data
+        self.assertEqual([l["code"] for l in cfg["languages"]], ["en", "ka"])
+        self.assertEqual(cfg["default"], "en")
+
+    @patch("documents.ocr.ocr_image", return_value={**OCR_RESULT, "complex_layout": True})
+    def test_complex_layout_flag_stored(self, mock_ocr):
+        response = self.client.post(reverse("document-upload"), {
+            "file": SimpleUploadedFile("t.png", make_png_bytes(), content_type="image/png")}, format="multipart")
+        self.assertTrue(response.data["document"]["complex_layout"])
+
+    def test_layout_heuristic(self):
+        from .ocr import detect_complex_layout
+        single_column = [[100, 100 + i * 40, 900, 125 + i * 40] for i in range(10)]
+        self.assertFalse(detect_complex_layout(single_column))
+        table = []
+        for i in range(6):
+            y = 100 + i * 60
+            table += [[100, y, 250, y + 25], [400, y, 500, y + 25], [700, y, 800, y + 25]]
+        self.assertTrue(detect_complex_layout(table))
+        one_split_line = single_column + [[100, 600, 300, 625], [600, 600, 900, 625]]
+        self.assertFalse(detect_complex_layout(one_split_line))

@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
-import { uploadDocument } from '../../api/documentApi';
+import { uploadDocument, getOCRConfig } from '../../api/documentApi';
 
 export default function DocumentUpload({ onUploadSuccess }) {
   const [isDragging, setIsDragging] = useState(false);
@@ -8,6 +8,15 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const [error, setError] = useState(null);
   const [successMsg, setSuccessMsg] = useState(null);
   const fileInputRef = useRef(null);
+  const [ocrLanguages, setOcrLanguages] = useState([]);
+  const [ocrLang, setOcrLang] = useState('');
+
+  useEffect(() => {
+    getOCRConfig().then((cfg) => {
+      setOcrLanguages(cfg.languages || []);
+      setOcrLang(cfg.default || '');
+    });
+  }, []);
 
   const allowedExtensions = ['.pdf', '.txt', '.png', '.jpg', '.jpeg'];
 
@@ -37,7 +46,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
 
     setIsUploading(true);
     try {
-      const res = await uploadDocument(file);
+      const res = await uploadDocument(file, ocrLang);
       if (res && res.success) {
         const ocrPages = res.document?.ocr_pages || 0;
         setSuccessMsg(
@@ -118,6 +127,22 @@ export default function DocumentUpload({ onUploadSuccess }) {
           </div>
         )}
       </div>
+
+      {ocrLanguages.length > 1 && (
+        <label className="ocr-lang-row" title="Language of the text in scanned pages and images">
+          <span>OCR language</span>
+          <select
+            className="model-select"
+            value={ocrLang}
+            onChange={(e) => setOcrLang(e.target.value)}
+            disabled={isUploading}
+          >
+            {ocrLanguages.map((l) => (
+              <option key={l.code} value={l.code}>{l.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
 
       {error && (
         <div className="upload-alert error">

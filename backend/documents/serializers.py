@@ -31,6 +31,8 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'ocr_pages_skipped',
             'truncated',
             'original_chars',
+            'ocr_lang',
+            'complex_layout',
             'limits',
             'uploaded_at',
             'text_length',
@@ -55,6 +57,18 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
 
 class DocumentUploadSerializer(serializers.Serializer):
     file = serializers.FileField(required=True)
+    # OCR language for scanned pages / images (must be in settings.OCR_ALLOWED_LANGS)
+    ocr_lang = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_ocr_lang(self, value):
+        from .ocr import allowed_languages, default_language
+        if not value:
+            return default_language()
+        if value not in allowed_languages():
+            raise serializers.ValidationError(
+                f"OCR language '{value}' is not enabled. Allowed: {', '.join(allowed_languages())}."
+            )
+        return value
 
     def validate_file(self, value):
         if value.size == 0:

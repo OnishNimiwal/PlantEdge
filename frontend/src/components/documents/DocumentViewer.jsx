@@ -47,6 +47,16 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
       `Only the first ${maxChars.toLocaleString()} of ${(document.original_chars || 0).toLocaleString()} extracted characters were kept (DOCUMENT_MAX_CHARS).`
     );
   }
+  if (document.complex_layout) {
+    limitWarnings.push(
+      'Table or multi-column layout detected: extracted text is flattened line by line, so columns may be interleaved. Check tables against the original.'
+    );
+  }
+  if (document.ocr_pages > 0 && document.ocr_confidence != null && document.ocr_confidence < 0.85) {
+    limitWarnings.push(
+      'Low OCR recognition confidence: the scan may be poor quality, rotated, handwritten or in a different language. Verify important values against the original.'
+    );
+  }
   if (document.ocr_pages_skipped > 0) {
     limitWarnings.push(
       `${document.ocr_pages_skipped} scanned page(s) were not OCR'd: the limit is ${document.limits?.max_ocr_pages} OCR pages per PDF (OCR_MAX_PDF_PAGES).`
@@ -124,10 +134,13 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
               {(document.extracted_text || "").length.toLocaleString()} / {maxChars.toLocaleString()} chars
             </span>
             {document.ocr_pages > 0 && (
-              <span className="meta-badge ocr" title="Text extracted locally with PaddleOCR">
+              <span
+                className="meta-badge ocr"
+                title="Text extracted locally with PaddleOCR. Recognition confidence is PaddleOCR's own score for the text it found; it is not a measured accuracy and can be high even when text is misread or missing."
+              >
                 <ScanText size={13} />
-                OCR · {document.ocr_pages} page{document.ocr_pages > 1 ? 's' : ''}
-                {document.ocr_confidence != null && ` · ${Math.round(document.ocr_confidence * 100)}% confidence`}
+                OCR{document.ocr_lang ? ` (${document.ocr_lang})` : ''} · {document.ocr_pages} page{document.ocr_pages > 1 ? 's' : ''}
+                {document.ocr_confidence != null && ` · recognition confidence ${Math.round(document.ocr_confidence * 100)}%`}
               </span>
             )}
             {document.truncated && (
