@@ -191,7 +191,7 @@ class DocumentAPITests(APITestCase):
 
     def test_phase1_chat_still_works(self):
         """Regression test: Phase 1 /api/chat/ endpoint still works."""
-        with patch("chat.services.requests.post") as mock_post:
+        with patch("chat.model_manager.requests.post") as mock_post:
             mock_resp = Mock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"response": "Phase 1 chat response"}

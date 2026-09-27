@@ -3,9 +3,12 @@ from django.urls import include, path
 from django.conf import settings
 from django.conf.urls.static import static
 
+from chat.views import ModelListAPIView
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/chat/", include("chat.urls")),
+    path("api/models/", ModelListAPIView.as_view(), name="models"),
     path("api/documents/", include("documents.urls")),
 ]
 

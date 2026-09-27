@@ -1,7 +1,7 @@
 import React from 'react';
 import { ShieldCheck, Server, Cpu, Lock, MessageSquare, FileText } from 'lucide-react';
 
-export default function Header({ activeTab, onTabChange }) {
+export default function Header({ activeTab, onTabChange, modelName }) {
   return (
     <header className="app-header">
       <div className="header-left">
@@ -47,7 +47,7 @@ export default function Header({ activeTab, onTabChange }) {
 
         <div className="status-badge model-badge" title="Powered by local Ollama instance">
           <Cpu size={14} className="badge-icon" />
-          <span>Model: <strong>Local Ollama</strong></span>
+          <span>Model: <strong>{modelName || 'Local Ollama'}</strong></span>
         </div>
       </div>
     </header>

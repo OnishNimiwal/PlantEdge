@@ -1,9 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Header from './components/Header';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import DocumentsPage from './components/documents/DocumentsPage';
-import { sendMessage } from './api/chatApi';
+import { sendMessage, fetchModels } from './api/chatApi';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'documents'
@@ -13,12 +13,25 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Local model registry (manual selection; no automatic routing)
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(null);
+
+  useEffect(() => {
+    fetchModels().then((data) => {
+      setModels(data.models || []);
+      setSelectedModel(data.default || data.models?.[0]?.id || null);
+    });
+  }, []);
+
+  const modelName = (id) => models.find((m) => m.id === id)?.name || id;
+
   const formatTime = () => {
     const now = new Date();
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const handleSendMessage = async (text) => {
+  const handleSendMessage = async (text, images = []) => {
     if (!text.trim() || isLoading) return;
 
     setError(null);
@@ -27,13 +40,14 @@ export default function App() {
       sender: 'user',
       text: text,
       time: formatTime(),
+      image: images[0] || null,
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
     try {
-      const result = await sendMessage(text);
+      const result = await sendMessage(text, selectedModel, images);
 
       if (result && result.success && result.response) {
         const botMsg = {
@@ -41,7 +55,7 @@ export default function App() {
           sender: 'bot',
           text: result.response,
           time: formatTime(),
-          model: result.model || 'local-ollama',
+          model: modelName(result.model) || 'local-ollama',
         };
         setMessages((prev) => [...prev, botMsg]);
       } else {
@@ -61,7 +75,11 @@ export default function App() {
 
   return (
     <div className="app-container">
-      <Header activeTab={activeTab} onTabChange={setActiveTab} />
+      <Header
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        modelName={activeTab === 'chat' && selectedModel ? modelName(selectedModel) : null}
+      />
 
       <main className="main-content">
         {activeTab === 'chat' ? (
@@ -75,6 +93,9 @@ export default function App() {
             <MessageInput
               onSendMessage={handleSendMessage}
               disabled={isLoading}
+              models={models}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
             />
           </div>
         ) : (

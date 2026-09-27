@@ -136,3 +136,24 @@ if cors_origins_env:
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434').rstrip('/')
 OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen3:4b')
 ALLOW_EXTERNAL_AI = os.getenv('ALLOW_EXTERNAL_AI', 'False').lower() in ('true', '1', 'yes')
+
+# Multi-model layer (registered local models live in chat/model_registry.py)
+DEFAULT_CHAT_MODEL = os.getenv('DEFAULT_CHAT_MODEL', 'qwen3')
+# Seconds. Generous because switching models on an 8 GB GPU means a reload,
+# and Qwen3 spends time "thinking" before it answers.
+OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '300'))
+
+# Server-side logging for the chat/model layer (metadata only, no prompts)
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'simple': {'format': '[{asctime}] {levelname} {name}: {message}', 'style': '{'},
+    },
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'simple'},
+    },
+    'loggers': {
+        'chat': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+    },
+}

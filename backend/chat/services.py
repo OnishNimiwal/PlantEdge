@@ -1,20 +1,10 @@
-import requests
-from django.conf import settings
+from .model_manager import ModelManager
 
-def ask_ollama(message: str) -> str:
+
+def ask_ollama(message: str, model_id: str = None, images=None) -> str:
     """
-    Sends a prompt to the locally running Ollama server's /api/generate endpoint.
-    Strictly uses local on-premise Ollama instance without external AI fallback.
+    Backward-compatible helper: sends a prompt to a registered local model via
+    the ModelManager. Strictly uses the local on-premise Ollama instance without
+    external AI fallback. `model_id` defaults to settings.DEFAULT_CHAT_MODEL.
     """
-    response = requests.post(
-        f"{settings.OLLAMA_URL}/api/generate",
-        json={
-            "model": settings.OLLAMA_MODEL,
-            "prompt": message,
-            "stream": False,
-        },
-        timeout=120,
-    )
-    response.raise_for_status()
-    data = response.json()
-    return data.get("response", "")
+    return ModelManager().generate(model_id, message, images=images)["response"]

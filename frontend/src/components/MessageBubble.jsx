@@ -24,10 +24,16 @@ export default function MessageBubble({ message }) {
       <div className="message-content-wrapper">
         <div className="message-meta">
           <span className="sender-name">{isUser ? 'You' : 'MRPL Local AI'}</span>
+          {!isUser && message.model && (
+            <span className="message-model-tag">{message.model}</span>
+          )}
           <span className="message-time">{message.time || ''}</span>
         </div>
 
         <div className={`message-bubble ${isUser ? 'user-bubble' : 'bot-bubble'}`}>
+          {message.image && (
+            <img className="message-image" src={message.image} alt="Attached" />
+          )}
           <div className="message-text">
             {message.text.split('\n').map((line, idx) => (
               <React.Fragment key={idx}>
