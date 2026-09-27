@@ -59,6 +59,7 @@ export default function App() {
           time: formatTime(),
           model: result.needs_image ? null : result.ollama_model || modelName(result.model) || 'local-ollama',
           routing: result.routing?.reason || null,
+          routingExplanation: result.routing?.explanation || null,
           notice: result.needs_image ? 'No model was called' : null,
         };
         setMessages((prev) => [...prev, botMsg]);

@@ -28,7 +28,9 @@ export default function MessageBubble({ message }) {
             <span className="message-model-tag">Model: {message.model}</span>
           )}
           {!isUser && message.routing && (
-            <span className="message-model-tag message-routing-tag">Routing: {message.routing}</span>
+            <span className="message-model-tag message-routing-tag" title={message.routingExplanation || ''}>
+              Routing: {message.routing}
+            </span>
           )}
           {!isUser && message.notice && (
             <span className="message-model-tag message-notice-tag">{message.notice}</span>

@@ -82,7 +82,7 @@ class ChatAPITests(APITestCase):
         )
         self.assertEqual(response.data["model"], "qwen-coder")
         self.assertEqual(response.data["ollama_model"], "qwen2.5-coder:7b")
-        self.assertEqual(response.data["routing"], {"mode": "auto", "reason": "coding"})
+        self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "auto", "reason": "coding"})
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "qwen2.5-coder:7b")
 
     @patch("chat.model_manager.requests.Session.post")
@@ -94,7 +94,7 @@ class ChatAPITests(APITestCase):
             format="json",
         )
         self.assertEqual(response.data["model"], "qwen3")
-        self.assertEqual(response.data["routing"], {"mode": "manual", "reason": "manual"})
+        self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "manual", "reason": "manual"})
 
     @patch("chat.model_manager.requests.Session.post")
     def test_auto_with_image_routes_to_vision(self, mock_post):
@@ -327,7 +327,8 @@ class RouterTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["model"], "qwen2.5vl:7b")
         self.assertEqual(response.data["reason"], "vision")
-        self.assertIn("p&id", response.data["matched"])
+        self.assertTrue(any("p&id" in m for m in response.data["matched"]))
+        self.assertTrue(response.data["requires_image"])
         self.assertEqual(self.client.post(url, {}, format="json").status_code, 400)
 
 
@@ -363,7 +364,7 @@ class ExecutionLayerTests(APITestCase):
                 response = self.client.post(reverse("chat"), body, format="json")
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 self.assertEqual(response.data["ollama_model"], tag)
-                self.assertEqual(response.data["routing"], {"mode": "auto", "reason": reason})
+                self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "auto", "reason": reason})
 
     def test_router_contains_no_ollama_http_logic(self):
         import inspect
@@ -523,3 +524,67 @@ class ImageSafetyTests(APITestCase):
         )
         self.assertEqual(response.data["model"], "qwen-vl")
         mock_post.assert_called_once()
+
+
+class RoutingRulesTests(APITestCase):
+    """Phase B: phrase/negative rules, visual targets, mixed requests, context (L7-L11, L24)."""
+
+    # (message, context, has_images, expected reason, expected requires_image)
+    CASES = [
+        ("Explain what federated learning is and why it is useful.", {}, False, "general_reasoning", False),
+        ("Explain what a P&ID is in 3 points.", {}, False, "general_reasoning", False),
+        ("Write a Python function to calculate the average of a list.", {}, False, "coding", False),
+        ("Analyze this engineering drawing.", {}, False, "vision", True),
+        ("Analyze this engineering drawing.", {}, True, "vision", False),
+        ("Summarize this industrial inspection report.", {}, False, "general_reasoning", False),
+        ("fix my script", {}, False, "coding", False),
+        ("It crashes, can you fix my script?", {}, False, "coding", False),
+        ("How can we reduce human error during inspections?", {}, False, "general_reasoning", False),
+        ("Design a training program for new operators.", {}, False, "general_reasoning", False),
+        ("Be careful about drawing conclusions from a single reading.", {}, False, "general_reasoning", False),
+        ("What colour is the pipe?", {}, False, "general_reasoning", False),
+        ("What colour is the pipe?", {"image_available": True}, False, "vision", False),
+        ("Analyze this image and write Python code to extract the detected objects.", {}, True, "vision", False),
+        ("Analyze this image and write Python code to extract the detected objects.", {}, False, "vision", True),
+        ("Write a Python function to resize an image.", {}, False, "coding", False),
+        ("There is rust on the pipe flange, is it serious?", {}, False, "general_reasoning", False),
+        ("What are the ASME code requirements for pressure vessels?", {}, False, "general_reasoning", False),
+        ("How does sodium react with water?", {}, False, "general_reasoning", False),
+        ("Fix this React component that re-renders forever.", {}, False, "coding", False),
+        ("Explain the function of a relief valve.", {}, False, "general_reasoning", False),
+        ("Which component is the largest?", {"image_available": True, "last_reason": "vision"}, False, "vision", False),
+        ("Which component is the largest?", {}, False, "general_reasoning", False),
+        ("Now write a Python script that counts them.", {"image_available": True, "last_reason": "vision"}, False, "coding", False),
+        ("TypeError: 'NoneType' object is not subscriptable", {}, False, "coding", False),
+        ("How do I debug this?", {}, False, "coding", False),
+        ("Read this handwritten document.", {}, False, "vision", True),
+        ("What symbols are used in the P&ID?", {}, False, "vision", True),
+        ("Summarize the key findings.", {"image_available": True}, False, "general_reasoning", False),
+        ("Is this the right approach for our maintenance program?", {}, False, "general_reasoning", False),
+        ("Write a Python function that returns the colour name.", {"image_available": True}, False, "coding", False),
+        ("What does the drawing show?", {"image_available": True}, False, "vision", False),
+    ]
+
+    def test_cases(self):
+        for message, context, has_images, reason, requires_image in self.CASES:
+            with self.subTest(message=message, context=context, has_images=has_images):
+                d = route_model(message, has_images=has_images, context=context)
+                self.assertEqual(d["reason"], reason, d["explanation"])
+                self.assertEqual(d["requires_image"], requires_image)
+                self.assertTrue(d["explanation"])
+
+    def test_negative_phrases_reported(self):
+        self.assertIn("human error", route_model("Reduce human error.")["signals"]["negated"])
+
+    def test_rules_are_data_in_separate_module(self):
+        import inspect
+        from . import router, routing_rules
+        self.assertNotIn("re.compile", inspect.getsource(routing_rules))
+        self.assertNotIn('"python"', inspect.getsource(router).lower())
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_general_topic_about_pid_is_answered_not_blocked(self, mock_post):
+        mock_post.return_value = ollama_ok("A P&ID is...")
+        response = self.client.post(reverse("chat"), {"message": "Explain what a P&ID is."}, format="json")
+        self.assertFalse(response.data.get("needs_image", False))
+        self.assertEqual(response.data["ollama_model"], "qwen3:8b")

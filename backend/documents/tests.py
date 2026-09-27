@@ -341,7 +341,7 @@ class DocumentOCRTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["ollama_model"], "qwen3:8b")
-        self.assertEqual(response.data["routing"], {"mode": "auto", "reason": "general_reasoning"})
+        self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "auto", "reason": "general_reasoning"})
         payload = mock_post.call_args.kwargs["json"]
         self.assertIn("shell corrosion near saddle", payload["prompt"])
         self.assertIn("produced by local OCR", payload["prompt"])
@@ -403,7 +403,7 @@ class DocumentOCRTests(APITestCase):
         doc = Document.objects.create(original_name="s.pdf", file_type="PDF", extracted_text="Findings...")
         response = self.client.post(reverse("document-summary", kwargs={"pk": doc.id}), {}, format="json")
         self.assertEqual(response.data["ollama_model"], "qwen3:8b")
-        self.assertEqual(response.data["routing"], {"mode": "fixed", "reason": "general_reasoning"})
+        self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "fixed", "reason": "general_reasoning"})
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "qwen3:8b")
 
     def test_ocr_module_has_no_model_execution_logic(self):

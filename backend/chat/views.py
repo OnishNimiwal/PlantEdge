@@ -15,7 +15,7 @@ from .model_manager import (
     NonLocalEndpointError,
     ModelResourceError,
 )
-from .router import route_model, REASON_VISION
+from .router import route_model
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,8 @@ def select_model(data) -> dict:
         decision = route_model(data["message"], has_images=bool(data.get("images")))
         return {**decision, "mode": "auto"}
     model = get_model(data["model"])
-    return {"model": model.ollama_name, "model_id": model.id, "mode": "manual", "reason": "manual"}
+    return {"model": model.ollama_name, "model_id": model.id, "mode": "manual", "reason": "manual",
+            "requires_image": False, "explanation": "model selected manually"}
 
 
 class ChatAPIView(APIView):
@@ -54,12 +55,13 @@ class ChatAPIView(APIView):
         # 1. Selection: router decides WHICH model.
         selection = select_model(data)
         model_id = selection["model_id"]
-        routing = {"mode": selection["mode"], "reason": selection["reason"]}
+        routing = {"mode": selection["mode"], "reason": selection["reason"],
+                   "explanation": selection["explanation"]}
         image_info = getattr(serializer, "image_info", [])
 
         # A visual question with nothing to look at: ask for the image instead of
         # sending the request to the vision model, which could only guess.
-        if selection["mode"] == "auto" and selection["reason"] == REASON_VISION and not data.get("images"):
+        if selection["requires_image"]:
             logger.info("Vision request without image: no model called")
             return Response({
                 "success": True,

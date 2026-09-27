@@ -92,15 +92,19 @@ def ask_document_question(document, question: str) -> dict:
     Answer a question about a document using the routed local model.
     Returns {"answer", "model", "ollama_model", "routing"}.
     """
-    decision = route_model(question)
+    has_visual = document.file_type in ("PDF", "PNG", "JPG") and bool(document.file)
+    decision = route_model(question, context={"image_available": has_visual})
     images = None
     context_info = {"document_chars": len(document.extracted_text), "context_chars_used": 0,
                     "context_truncated": False}
-    if decision["reason"] == REASON_VISION:
+    if decision["requires_image"]:
+        # e.g. "describe this image" on a TXT document: no visual, use the text.
+        decision = route_model("")
+    elif decision["reason"] == REASON_VISION:
         image = document_image_b64(document)
         images = [image] if image else None
         if images is None:
-            # Nothing visual to look at (e.g. TXT) -> fall back to text reasoning.
+            # Nothing visual to look at -> answer from the text instead.
             decision = route_model("")
 
     if images:
@@ -136,7 +140,7 @@ def ask_document_question(document, question: str) -> dict:
         "answer": result["response"],
         "model": result["model"],
         "ollama_model": result["ollama_model"],
-        "routing": {"mode": "auto", "reason": decision["reason"]},
+        "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
         "context": context_info,
     }
 
