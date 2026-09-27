@@ -7,7 +7,7 @@ class DocumentListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Document
-        fields = ['id', 'original_name', 'file_type', 'uploaded_at', 'text_length']
+        fields = ['id', 'original_name', 'file_type', 'extraction_method', 'uploaded_at', 'text_length']
 
     def get_text_length(self, obj):
         return len(obj.extracted_text) if obj.extracted_text else 0
@@ -23,6 +23,9 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'original_name',
             'file_type',
             'extracted_text',
+            'extraction_method',
+            'ocr_pages',
+            'ocr_confidence',
             'uploaded_at',
             'text_length',
             'file_url',

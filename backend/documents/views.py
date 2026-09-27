@@ -16,7 +16,7 @@ from .serializers import (
 )
 from .extractors import (
     validate_file_extension,
-    extract_text_from_file,
+    extract_document,
     DocumentExtractionError,
 )
 from .services import (
@@ -53,9 +53,9 @@ class DocumentUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Extract text using PyMuPDF or text reader
+        # Extract text: PyMuPDF text layer, TXT reader, or local PaddleOCR for scans/images
         try:
-            extracted_text = extract_text_from_file(uploaded_file, file_type)
+            extraction = extract_document(uploaded_file, file_type)
         except DocumentExtractionError as exc:
             return Response(
                 {"success": False, "error": str(exc)},
@@ -75,13 +75,19 @@ class DocumentUploadView(APIView):
             file=uploaded_file,
             original_name=uploaded_file.name,
             file_type=file_type,
-            extracted_text=extracted_text,
+            extracted_text=extraction["text"],
+            extraction_method=extraction["method"],
+            ocr_pages=extraction["ocr_pages"],
+            ocr_confidence=extraction["ocr_confidence"],
         )
 
         return Response(
             {
                 "success": True,
-                "message": "Document uploaded and extracted successfully.",
+                "message": (
+                    "Document uploaded and text extracted with local OCR."
+                    if extraction["ocr_pages"] else "Document uploaded and extracted successfully."
+                ),
                 "document": DocumentDetailSerializer(doc).data,
             },
             status=status.HTTP_201_CREATED,
@@ -121,24 +127,11 @@ class DocumentAskView(APIView):
         question = serializer.validated_data["question"]
 
         try:
-            answer = ask_document_question(
-                document_text=doc.extracted_text,
-                question=question,
-                filename=doc.original_name,
-            )
-            return Response({
-                "success": True,
-                "answer": answer,
-                "model": "local-ollama",
-                "external_api": False,
-            })
+            result = ask_document_question(doc, question)
+            return Response({"success": True, **result, "external_api": False})
         except OllamaServiceError as exc:
             return Response(
-                {
-                    "success": False,
-                    "error": "Local AI server is unavailable.",
-                    "details": str(exc),
-                },
+                {"success": False, "error": str(exc)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
@@ -147,23 +140,11 @@ class DocumentSummaryView(APIView):
         doc = get_object_or_404(Document, pk=pk)
 
         try:
-            summary = summarize_document(
-                document_text=doc.extracted_text,
-                filename=doc.original_name,
-            )
-            return Response({
-                "success": True,
-                "summary": summary,
-                "model": "local-ollama",
-                "external_api": False,
-            })
+            result = summarize_document(doc)
+            return Response({"success": True, **result, "external_api": False})
         except OllamaServiceError as exc:
             return Response(
-                {
-                    "success": False,
-                    "error": "Local AI server is unavailable.",
-                    "details": str(exc),
-                },
+                {"success": False, "error": str(exc)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 

@@ -1453,3 +1453,30 @@
   border-radius: var(--radius-md);
   margin-bottom: 0.5rem;
 }
+
+/* ===== Step 8: routing decision tag ===== */
+.message-routing-tag {
+  background-color: var(--badge-green-bg);
+  color: var(--badge-green-text);
+  border-color: var(--badge-green-border);
+}
+
+/* ===== Step 10: OCR documents ===== */
+.doc-tag.png,
+.doc-tag.jpg {
+  background-color: #f3e8ff;
+  color: #7e22ce;
+}
+
+.meta-badge.ocr {
+  background-color: var(--badge-green-bg);
+  border-color: var(--badge-green-border);
+  color: var(--badge-green-text);
+}
+
+.doc-model-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.3rem;
+}

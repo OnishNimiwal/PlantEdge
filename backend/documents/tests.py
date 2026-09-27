@@ -51,12 +51,12 @@ class DocumentAPITests(APITestCase):
         self.assertIn("Phase 2 local document assistant", response.data["document"]["extracted_text"])
 
     def test_reject_unsupported_extensions(self):
-        """Test that extensions like .docx, .xlsx, .jpg, .png are rejected."""
+        """Test that extensions like .docx, .xlsx, .gif, .bmp are rejected (PNG/JPG now go to OCR)."""
         bad_files = [
             ("data.docx", b"dummy docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
             ("sheet.xlsx", b"dummy xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-            ("image.jpg", b"\xff\xd8\xff", "image/jpeg"),
-            ("photo.png", b"\x89PNG\r\n", "image/png"),
+            ("anim.gif", b"GIF89a", "image/gif"),
+            ("scan.bmp", b"BM", "image/bmp"),
         ]
 
         for filename, content, mime in bad_files:
@@ -84,7 +84,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(extracted.startswith("A" * 50000))
         self.assertIn("truncated at 50,000 characters", extracted)
 
-    @patch("documents.services.requests.post")
+    @patch("chat.model_manager.requests.post")
     def test_ask_question_about_document(self, mock_post):
         """Test asking a question about an uploaded document."""
         mock_resp = Mock()
@@ -106,7 +106,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertEqual(response.data["answer"], "The document specifies on-premise inference on PC5.")
 
-    @patch("documents.services.requests.post")
+    @patch("chat.model_manager.requests.post")
     def test_summarize_document(self, mock_post):
         """Test generating an AI summary of an uploaded document."""
         mock_resp = Mock()
@@ -128,7 +128,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertIn("Executive Overview", response.data["summary"])
 
-    @patch("documents.services.requests.post")
+    @patch("chat.model_manager.requests.post")
     def test_ollama_offline_returns_503(self, mock_post):
         """Test that Ollama connection error returns HTTP 503."""
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
@@ -205,3 +205,210 @@ class DocumentAPITests(APITestCase):
             )
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             self.assertTrue(response.data["success"])
+
+
+# ---------------------------------------------------------------------------
+# Step 10: local OCR + routed document reasoning (PaddleOCR mocked for speed)
+# ---------------------------------------------------------------------------
+import base64
+import shutil
+import tempfile
+
+from django.test import override_settings
+
+TEMP_MEDIA = tempfile.mkdtemp(prefix="mrpl-test-media-")
+
+
+def make_png_bytes(width=400, height=200) -> bytes:
+    pix = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), False)
+    pix.clear_with(255)
+    return pix.tobytes("png")
+
+
+def make_scanned_pdf_bytes(pages=1, text_pages=()) -> bytes:
+    """PDF whose pages are images only (no text layer), except indexes in text_pages."""
+    doc = pymupdf.open()
+    for i in range(pages):
+        page = doc.new_page()
+        if i in text_pages:
+            page.insert_text((50, 72), f"Typed page {i + 1}: pressure test passed at 12 bar.")
+        else:
+            page.insert_image(page.rect, stream=make_png_bytes(300, 400))
+    data = doc.tobytes()
+    doc.close()
+    return data
+
+
+def ok_response(text):
+    resp = Mock()
+    resp.status_code = 200
+    resp.json.return_value = {"response": text}
+    resp.raise_for_status = Mock()
+    return resp
+
+
+OCR_RESULT = {"text": "Inspection Date: 14 Sep 2026\nFinding: shell corrosion", "lines": 2, "confidence": 0.98}
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocumentOCRTests(APITestCase):
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        shutil.rmtree(TEMP_MEDIA, ignore_errors=True)
+
+    def upload(self, name, data, mime):
+        return self.client.post(
+            reverse("document-upload"),
+            {"file": SimpleUploadedFile(name, data, content_type=mime)},
+            format="multipart",
+        )
+
+    @patch("documents.ocr.ocr_image", return_value=OCR_RESULT)
+    def test_png_upload_runs_local_ocr(self, mock_ocr):
+        response = self.upload("scan.png", make_png_bytes(), "image/png")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        doc = response.data["document"]
+        self.assertEqual(doc["file_type"], "PNG")
+        self.assertEqual(doc["extraction_method"], "ocr")
+        self.assertEqual(doc["ocr_pages"], 1)
+        self.assertEqual(doc["ocr_confidence"], 0.98)
+        self.assertIn("shell corrosion", doc["extracted_text"])
+        mock_ocr.assert_called_once()
+
+    @patch("documents.ocr.ocr_image", return_value=OCR_RESULT)
+    def test_jpeg_extension_accepted(self, mock_ocr):
+        response = self.upload("scan.jpeg", b"\xff\xd8\xff\xe0" + b"\x00" * 20, "image/jpeg")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["document"]["file_type"], "JPG")
+
+    @patch("documents.ocr.ocr_image")
+    def test_fake_image_rejected_before_ocr(self, mock_ocr):
+        response = self.upload("fake.png", b"not really a png", "image/png")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_ocr.assert_not_called()
+
+    @patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT)
+    def test_scanned_pdf_pages_are_ocred(self, mock_ocr):
+        response = self.upload("scan.pdf", make_scanned_pdf_bytes(pages=2), "application/pdf")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        doc = response.data["document"]
+        self.assertEqual(doc["extraction_method"], "ocr")
+        self.assertEqual(doc["ocr_pages"], 2)
+        self.assertIn("--- Page 1 (OCR) ---", doc["extracted_text"])
+        self.assertIn("--- Page 2 (OCR) ---", doc["extracted_text"])
+        self.assertEqual(mock_ocr.call_count, 2)
+
+    @patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT)
+    def test_mixed_pdf_only_ocrs_scanned_pages(self, mock_ocr):
+        response = self.upload("mixed.pdf", make_scanned_pdf_bytes(pages=2, text_pages=(0,)), "application/pdf")
+        doc = response.data["document"]
+        self.assertEqual(doc["extraction_method"], "text+ocr")
+        self.assertEqual(doc["ocr_pages"], 1)
+        self.assertIn("pressure test passed", doc["extracted_text"])
+        self.assertIn("--- Page 2 (OCR) ---", doc["extracted_text"])
+        mock_ocr.assert_called_once()
+
+    @patch("documents.ocr.ocr_pdf_page")
+    def test_text_pdf_does_not_use_ocr(self, mock_ocr):
+        response = self.upload("typed.pdf", create_sample_pdf_bytes("A normal digital PDF with a text layer."), "application/pdf")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["document"]["extraction_method"], "text")
+        mock_ocr.assert_not_called()
+
+    @override_settings(OCR_MAX_PDF_PAGES=1)
+    @patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT)
+    def test_ocr_page_cap(self, mock_ocr):
+        response = self.upload("long.pdf", make_scanned_pdf_bytes(pages=3), "application/pdf")
+        self.assertEqual(response.data["document"]["ocr_pages"], 1)
+        self.assertIn("2 further scanned page(s) were not processed", response.data["document"]["extracted_text"])
+
+    @patch("documents.ocr.ocr_pdf_page", return_value={"text": "", "lines": 0, "confidence": 0.0})
+    def test_blank_scan_returns_clean_error(self, mock_ocr):
+        response = self.upload("blank.pdf", make_scanned_pdf_bytes(pages=1), "application/pdf")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("even with local OCR", response.data["error"])
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("Key findings: corrosion."))
+    def test_ocr_text_question_routes_to_qwen3(self, mock_post):
+        doc = Document.objects.create(
+            original_name="scan.pdf", file_type="PDF", extraction_method="ocr",
+            ocr_pages=1, extracted_text="Finding: shell corrosion near saddle.",
+        )
+        response = self.client.post(
+            reverse("document-ask", kwargs={"pk": doc.id}),
+            {"question": "Summarize this document and list the key findings."}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["ollama_model"], "qwen3:8b")
+        self.assertEqual(response.data["routing"], {"mode": "auto", "reason": "general_reasoning"})
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn("shell corrosion near saddle", payload["prompt"])
+        self.assertIn("produced by local OCR", payload["prompt"])
+        self.assertNotIn("images", payload)
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("A pump symbol."))
+    def test_visual_question_sends_image_to_vision_model(self, mock_post):
+        doc = Document.objects.create(
+            original_name="drawing.png", file_type="PNG", extraction_method="ocr",
+            extracted_text="P-101", file=SimpleUploadedFile("drawing.png", make_png_bytes(2400, 1200)),
+        )
+        response = self.client.post(
+            reverse("document-ask", kwargs={"pk": doc.id}),
+            {"question": "Describe the diagram in this image."}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
+        self.assertEqual(response.data["routing"]["reason"], "vision")
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(len(payload["images"]), 1)
+        sent = pymupdf.Pixmap(base64.b64decode(payload["images"][0]))
+        self.assertLessEqual(max(sent.width, sent.height), 1024)  # downscaled for 8 GB VRAM
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("A title block."))
+    def test_visual_question_on_scanned_pdf_sends_page_one(self, mock_post):
+        doc = Document.objects.create(
+            original_name="scan.pdf", file_type="PDF", extraction_method="ocr", extracted_text="x" * 30,
+            file=SimpleUploadedFile("scan.pdf", make_scanned_pdf_bytes(pages=2)),
+        )
+        response = self.client.post(
+            reverse("document-ask", kwargs={"pk": doc.id}),
+            {"question": "What does the drawing show?"}, format="json",
+        )
+        self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
+        self.assertEqual(len(mock_post.call_args.kwargs["json"]["images"]), 1)
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("ok"))
+    def test_visual_question_on_txt_falls_back_to_text_model(self, mock_post):
+        doc = Document.objects.create(original_name="n.txt", file_type="TXT", extracted_text="notes")
+        response = self.client.post(
+            reverse("document-ask", kwargs={"pk": doc.id}),
+            {"question": "Describe the image."}, format="json",
+        )
+        self.assertEqual(response.data["ollama_model"], "qwen3:8b")
+        self.assertEqual(response.data["routing"]["reason"], "general_reasoning")
+        self.assertNotIn("images", mock_post.call_args.kwargs["json"])
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("coded"))
+    def test_coding_question_routes_to_coder(self, mock_post):
+        doc = Document.objects.create(original_name="r.pdf", file_type="PDF", extracted_text="Readings: 1, 2, 3")
+        response = self.client.post(
+            reverse("document-ask", kwargs={"pk": doc.id}),
+            {"question": "Write a Python function that parses these readings."}, format="json",
+        )
+        self.assertEqual(response.data["ollama_model"], "qwen2.5-coder:7b")
+
+    @patch("chat.model_manager.requests.post", return_value=ok_response("1. Executive Overview"))
+    def test_summary_uses_qwen3(self, mock_post):
+        doc = Document.objects.create(original_name="s.pdf", file_type="PDF", extracted_text="Findings...")
+        response = self.client.post(reverse("document-summary", kwargs={"pk": doc.id}), {}, format="json")
+        self.assertEqual(response.data["ollama_model"], "qwen3:8b")
+        self.assertEqual(response.data["routing"], {"mode": "fixed", "reason": "general_reasoning"})
+        self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "qwen3:8b")
+
+    def test_ocr_module_has_no_model_execution_logic(self):
+        import inspect
+        from . import ocr
+        source = inspect.getsource(ocr)
+        for forbidden in ("import requests", "OLLAMA_URL", "/api/generate", "from chat", "import chat"):
+            self.assertNotIn(forbidden, source)

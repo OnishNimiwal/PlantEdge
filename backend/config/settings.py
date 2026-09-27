@@ -143,6 +143,16 @@ DEFAULT_CHAT_MODEL = os.getenv('DEFAULT_CHAT_MODEL', 'qwen3')
 # and Qwen3 spends time "thinking" before it answers.
 OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '300'))
 
+# Local OCR (PaddleOCR on CPU; see documents/ocr.py)
+OCR_LANG = os.getenv('OCR_LANG', 'en')
+OCR_PDF_DPI = int(os.getenv('OCR_PDF_DPI', '200'))
+OCR_MAX_PDF_PAGES = int(os.getenv('OCR_MAX_PDF_PAGES', '20'))
+OCR_CPU_THREADS = int(os.getenv('OCR_CPU_THREADS', '8'))
+# Optional explicit PaddleOCR model names, e.g. PP-OCRv5_mobile_det / en_PP-OCRv5_mobile_rec
+# (about 4x faster on CPU, slightly less accurate). Empty = PaddleOCR default for OCR_LANG.
+OCR_DET_MODEL = os.getenv('OCR_DET_MODEL', '')
+OCR_REC_MODEL = os.getenv('OCR_REC_MODEL', '')
+
 # Server-side logging for the chat/model layer (metadata only, no prompts)
 LOGGING = {
     'version': 1,
@@ -155,5 +165,6 @@ LOGGING = {
     },
     'loggers': {
         'chat': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'documents': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }

@@ -27,6 +27,8 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
           sender: 'bot',
           text: res.answer,
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          model: res.ollama_model,
+          routing: res.routing?.reason,
         };
         setConversation((prev) => [...prev, botItem]);
       } else {
@@ -63,6 +65,14 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
                   {isUser ? <User size={15} /> : <Bot size={15} />}
                 </div>
                 <div className="qa-content-wrap">
+                  {!isUser && msg.model && (
+                    <span className="doc-model-tags">
+                      <span className="message-model-tag">Model: {msg.model}</span>
+                      {msg.routing && (
+                        <span className="message-model-tag message-routing-tag">Routing: {msg.routing}</span>
+                      )}
+                    </span>
+                  )}
                   <div className={`qa-bubble ${isUser ? 'user' : 'bot'}`}>
                     <p>{msg.text}</p>
                     {!isUser && (
@@ -91,7 +101,7 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
             <div className="qa-content-wrap">
               <div className="qa-bubble bot loading">
                 <Loader2 size={16} className="spin-icon" />
-                <span>Analyzing document with local Qwen...</span>
+                <span>Analyzing document with local model...</span>
               </div>
             </div>
           </div>

@@ -1,11 +1,24 @@
 import os
 import pymupdf  # PyMuPDF fitz
+from django.conf import settings
+
+from . import ocr
 
 MAX_EXTRACTED_CHARS = 50000
 ALLOWED_EXTENSIONS = {
     '.pdf': 'PDF',
     '.txt': 'TXT',
+    '.png': 'PNG',
+    '.jpg': 'JPG',
+    '.jpeg': 'JPG',
 }
+IMAGE_TYPES = {'PNG', 'JPG'}
+IMAGE_SIGNATURES = {
+    'PNG': b"\x89PNG\r\n\x1a\n",
+    'JPG': b"\xff\xd8\xff",
+}
+# A PDF page with fewer non-whitespace characters than this is treated as scanned.
+MIN_PAGE_TEXT_CHARS = 20
 
 class DocumentExtractionError(Exception):
     """Custom exception raised when document extraction fails."""
@@ -13,23 +26,90 @@ class DocumentExtractionError(Exception):
 
 def validate_file_extension(filename: str) -> str:
     """
-    Validates that the file has an allowed extension (.pdf or .txt).
-    Returns the normalized file_type string ('PDF' or 'TXT').
+    Validates that the file has an allowed extension.
+    Returns the normalized file_type string ('PDF', 'TXT', 'PNG' or 'JPG').
     """
     _, ext = os.path.splitext(filename.lower())
     if ext not in ALLOWED_EXTENSIONS:
         raise DocumentExtractionError(
-            f"Unsupported file type '{ext}'. Only PDF (.pdf) and TXT (.txt) files are allowed."
+            f"Unsupported file type '{ext}'. Only PDF, TXT, PNG and JPG/JPEG files are allowed."
         )
     return ALLOWED_EXTENSIONS[ext]
 
-def extract_text_from_file(file_obj, file_type: str) -> str:
+def _page_has_text(text: str) -> bool:
+    return len("".join(text.split())) >= MIN_PAGE_TEXT_CHARS
+
+def _extract_pdf(file_bytes: bytes) -> dict:
+    """Text layer where present; local OCR for scanned (image-only) pages."""
+    max_ocr_pages = getattr(settings, "OCR_MAX_PDF_PAGES", 20)
+    with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
+        if len(doc) == 0:
+            raise DocumentExtractionError("The uploaded PDF has no pages.")
+
+        pages = []  # (page_number, text, via_ocr)
+        ocr_confidences = []
+        skipped_pages = []
+        for page in doc:
+            page_text = page.get_text("text").strip()
+            if _page_has_text(page_text):
+                pages.append((page.number + 1, page_text, False))
+            elif len(ocr_confidences) < max_ocr_pages:
+                try:
+                    result = ocr.ocr_pdf_page(page)
+                except ocr.OCRError as exc:
+                    raise DocumentExtractionError(str(exc)) from exc
+                ocr_confidences.append(result["confidence"])
+                pages.append((page.number + 1, result["text"], True))
+            else:
+                skipped_pages.append(page.number + 1)
+
+    ocr_pages = len(ocr_confidences)
+    if not any(t.strip() for _, t, _ in pages):
+        text, method = "", ("ocr" if ocr_pages else "text")
+    elif ocr_pages == 0:
+        # Unchanged behaviour for normal text PDFs.
+        text = "\n\n".join(t for _, t, _ in pages if t)
+        method = "text"
+    else:
+        text = "\n\n".join(
+            f"--- Page {num}{' (OCR)' if via_ocr else ''} ---\n{t}" for num, t, via_ocr in pages
+        )
+        method = "ocr" if ocr_pages == len(pages) else "text+ocr"
+        if skipped_pages:
+            text += (
+                f"\n\n[Note: OCR limited to {max_ocr_pages} scanned pages; "
+                f"{len(skipped_pages)} further scanned page(s) were not processed]"
+            )
+    return {
+        "text": text.strip(),
+        "method": method,
+        "ocr_pages": ocr_pages,
+        "ocr_confidence": round(sum(ocr_confidences) / ocr_pages, 3) if ocr_pages else None,
+    }
+
+def _extract_image(file_bytes: bytes, file_type: str) -> dict:
+    if not file_bytes.startswith(IMAGE_SIGNATURES[file_type]):
+        raise DocumentExtractionError(f"The uploaded file is not a valid {file_type} image.")
+    try:
+        result = ocr.ocr_image(file_bytes)
+    except ocr.OCRError as exc:
+        raise DocumentExtractionError(str(exc)) from exc
+    return {
+        "text": result["text"].strip(),
+        "method": "ocr",
+        "ocr_pages": 1,
+        "ocr_confidence": result["confidence"],
+    }
+
+def extract_document(file_obj, file_type: str) -> dict:
     """
     Extracts text from an uploaded file object.
-    Supports PDF (via PyMuPDF) and TXT.
+    PDF: PyMuPDF text layer, with local PaddleOCR for scanned pages.
+    PNG/JPG: local PaddleOCR. TXT: decoded directly.
+    Returns {"text", "method", "ocr_pages", "ocr_confidence"}.
     Enforces a strict 50,000 character limit.
     """
-    text = ""
+    result = {"text": "", "method": "text", "ocr_pages": 0, "ocr_confidence": None}
     file_obj.seek(0)
 
     if file_type == 'PDF':
@@ -38,25 +118,24 @@ def extract_text_from_file(file_obj, file_type: str) -> str:
             file_bytes = file_obj.read()
             if not file_bytes:
                 raise DocumentExtractionError("The uploaded PDF file is empty.")
-            
-            with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
-                if len(doc) == 0:
-                    raise DocumentExtractionError("The uploaded PDF has no pages.")
-                
-                pages_text = []
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    page_text = page.get_text("text")
-                    if page_text:
-                        pages_text.append(page_text.strip())
-                
-                text = "\n\n".join(pages_text).strip()
+            result = _extract_pdf(file_bytes)
         except pymupdf.FileDataError as exc:
             raise DocumentExtractionError(f"Corrupted or invalid PDF file: {str(exc)}") from exc
         except DocumentExtractionError:
             raise
         except Exception as exc:
             raise DocumentExtractionError(f"Failed to extract text from PDF: {str(exc)}") from exc
+
+    elif file_type in IMAGE_TYPES:
+        file_bytes = file_obj.read()
+        if not file_bytes:
+            raise DocumentExtractionError("The uploaded image file is empty.")
+        try:
+            result = _extract_image(file_bytes, file_type)
+        except DocumentExtractionError:
+            raise
+        except Exception as exc:
+            raise DocumentExtractionError(f"Failed to run OCR on image: {str(exc)}") from exc
 
     elif file_type == 'TXT':
         try:
@@ -66,9 +145,9 @@ def extract_text_from_file(file_obj, file_type: str) -> str:
             
             # Try utf-8 first, fallback to latin-1
             try:
-                text = raw_bytes.decode('utf-8').strip()
+                result["text"] = raw_bytes.decode('utf-8').strip()
             except UnicodeDecodeError:
-                text = raw_bytes.decode('latin-1', errors='replace').strip()
+                result["text"] = raw_bytes.decode('latin-1', errors='replace').strip()
         except DocumentExtractionError:
             raise
         except Exception as exc:
@@ -76,10 +155,11 @@ def extract_text_from_file(file_obj, file_type: str) -> str:
     else:
         raise DocumentExtractionError(f"Unsupported file type '{file_type}'.")
 
+    text = result["text"]
     if not text.strip():
         raise DocumentExtractionError(
-            "No readable text could be extracted from this document. "
-            "(Note: scanned image-only PDFs require OCR which is not enabled in Phase 2)."
+            "No readable text could be extracted from this document, even with local OCR. "
+            "The scan may be blank, too low-resolution, or contain only graphics."
         )
 
     # Enforce 50,000 character maximum limit
@@ -88,5 +168,9 @@ def extract_text_from_file(file_obj, file_type: str) -> str:
             text[:MAX_EXTRACTED_CHARS]
             + f"\n\n[Note: Document truncated at {MAX_EXTRACTED_CHARS:,} characters for on-premise memory protection]"
         )
+    result["text"] = text
+    return result
 
-    return text
+def extract_text_from_file(file_obj, file_type: str) -> str:
+    """Backward-compatible helper returning only the extracted text."""
+    return extract_document(file_obj, file_type)["text"]

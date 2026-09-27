@@ -4,8 +4,12 @@ from django.db import models
 class Document(models.Model):
     file = models.FileField(upload_to="documents/%Y/%m/")
     original_name = models.CharField(max_length=255)
-    file_type = models.CharField(max_length=10)  # 'PDF' or 'TXT'
+    file_type = models.CharField(max_length=10)  # 'PDF', 'TXT', 'PNG' or 'JPG'
     extracted_text = models.TextField(blank=True)
+    # 'text' (text layer / plain text), 'ocr' (local PaddleOCR) or 'text+ocr' (mixed PDF)
+    extraction_method = models.CharField(max_length=10, default='text')
+    ocr_pages = models.PositiveIntegerField(default=0)
+    ocr_confidence = models.FloatField(null=True, blank=True)  # mean PaddleOCR score
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -25,7 +25,10 @@ export default function MessageBubble({ message }) {
         <div className="message-meta">
           <span className="sender-name">{isUser ? 'You' : 'MRPL Local AI'}</span>
           {!isUser && message.model && (
-            <span className="message-model-tag">{message.model}</span>
+            <span className="message-model-tag">Model: {message.model}</span>
+          )}
+          {!isUser && message.routing && (
+            <span className="message-model-tag message-routing-tag">Routing: {message.routing}</span>
           )}
           <span className="message-time">{message.time || ''}</span>
         </div>

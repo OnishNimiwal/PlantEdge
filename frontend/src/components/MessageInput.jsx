@@ -39,8 +39,10 @@ export default function MessageInput({
   const textareaRef = useRef(null);
   const fileRef = useRef(null);
 
+  const isAuto = selectedModel === 'auto';
   const currentModel = models?.find((m) => m.id === selectedModel);
-  const supportsImages = Boolean(currentModel?.supports_images);
+  // In auto mode an attached image makes the router pick the vision model.
+  const supportsImages = isAuto || Boolean(currentModel?.supports_images);
 
   useEffect(() => {
     if (!disabled && textareaRef.current) {
@@ -145,7 +147,7 @@ export default function MessageInput({
           value={input}
           onChange={handleInputChange}
           onKeyDown={handleKeyDown}
-          placeholder={`Ask ${currentModel?.name || 'the local Qwen model'}... (Press Enter to send, Shift+Enter for newline)`}
+          placeholder={`Ask ${isAuto ? 'the local AI (auto model routing)' : currentModel?.name || 'the local Qwen model'}... (Press Enter to send, Shift+Enter for newline)`}
           rows={1}
           disabled={disabled}
         />

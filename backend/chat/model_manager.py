@@ -1,14 +1,21 @@
 """
-ModelManager: the single place where Django talks to the local Ollama server.
+Model execution layer: the single place where Django talks to the local Ollama server.
+
+The router (router.py) decides WHICH model to use; this module decides HOW to
+talk to it. Entry point: generate_response(model, prompt, images=None).
 
 All inference goes Django -> local Ollama -> local model. There is no external
-or cloud fallback. Model loading/unloading is left to Ollama's scheduler, which
+or cloud fallback, and requests are refused if OLLAMA_URL is not a localhost or
+private-LAN address. Model loading/unloading is left to Ollama's scheduler, which
 evicts idle models when a new one does not fit in VRAM, so the three models are
 used sequentially rather than held in GPU memory simultaneously.
 """
 
+import ipaddress
 import logging
+import socket
 import time
+from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
@@ -40,6 +47,32 @@ class ModelRequestError(ModelManagerError):
     public_message = "The local AI model failed to process the request."
 
 
+class NonLocalEndpointError(ModelManagerError):
+    public_message = "Local AI server is misconfigured."
+
+
+def _is_local_address(address: str) -> bool:
+    ip = ipaddress.ip_address(address)
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def ensure_local_endpoint(base_url: str) -> None:
+    """
+    Refuse any Ollama URL that does not resolve to localhost / a private LAN
+    address, so a misconfigured OLLAMA_URL can never send prompts off-premise.
+    """
+    host = urlparse(base_url).hostname
+    if not host:
+        raise NonLocalEndpointError(f"Invalid OLLAMA_URL: {base_url!r}")
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except socket.gaierror as exc:
+        raise ModelUnavailableError(f"Cannot resolve Ollama host {host!r}") from exc
+    if not addresses or not all(_is_local_address(a) for a in addresses):
+        logger.error("Refusing non-local Ollama endpoint: host=%s", host)
+        raise NonLocalEndpointError(f"Ollama host {host!r} is not a local address")
+
+
 class ModelManager:
     def __init__(self, base_url=None, timeout=None):
         self.base_url = (base_url or settings.OLLAMA_URL).rstrip("/")
@@ -49,11 +82,14 @@ class ModelManager:
         """
         Run a single non-streaming generation on a registered local model.
 
+        `model_id` may be a registry id ("qwen-coder") or an Ollama tag
+        ("qwen2.5-coder:7b"); omitted -> DEFAULT_CHAT_MODEL.
         `images` is an optional list of base64-encoded images (multimodal models only).
         Returns {"response", "model", "ollama_model", "duration_ms"}.
         Raises UnknownModelError or a ModelManagerError subclass.
         """
         model = get_model(model_id or get_default_model_id())
+        ensure_local_endpoint(self.base_url)
         payload = {
             "model": model.ollama_name,
             "prompt": prompt,
@@ -118,3 +154,13 @@ class ModelManager:
             "ollama_model": model.ollama_name,
             "duration_ms": duration,
         }
+
+
+def generate_response(model: str, prompt: str, images=None) -> dict:
+    """
+    Execution-layer entry point: run `prompt` on the model chosen by the router.
+
+    `model` is the router's Ollama tag (e.g. "qwen2.5-coder:7b") or a registry id.
+    Returns {"response", "model", "ollama_model", "duration_ms"}.
+    """
+    return ModelManager().generate(model, prompt, images=images)

@@ -9,12 +9,12 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const [successMsg, setSuccessMsg] = useState(null);
   const fileInputRef = useRef(null);
 
-  const allowedExtensions = ['.pdf', '.txt'];
+  const allowedExtensions = ['.pdf', '.txt', '.png', '.jpg', '.jpeg'];
 
   const validateFile = (file) => {
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!allowedExtensions.includes(ext)) {
-      return `Invalid file type '${ext}'. Only PDF (.pdf) and TXT (.txt) files are supported.`;
+      return `Invalid file type '${ext}'. Only PDF, TXT, PNG and JPG/JPEG files are supported.`;
     }
     if (file.size === 0) {
       return "The selected file is empty.";
@@ -39,7 +39,12 @@ export default function DocumentUpload({ onUploadSuccess }) {
     try {
       const res = await uploadDocument(file);
       if (res && res.success) {
-        setSuccessMsg(`"${file.name}" uploaded and text extracted successfully!`);
+        const ocrPages = res.document?.ocr_pages || 0;
+        setSuccessMsg(
+          ocrPages
+            ? `"${file.name}" processed with local OCR (${ocrPages} page${ocrPages > 1 ? 's' : ''}).`
+            : `"${file.name}" uploaded and text extracted successfully!`
+        );
         if (onUploadSuccess) onUploadSuccess(res.document);
         setTimeout(() => setSuccessMsg(null), 4000);
       } else {
@@ -89,7 +94,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.txt"
+          accept=".pdf,.txt,.png,.jpg,.jpeg"
           onChange={handleFileSelect}
           style={{ display: 'none' }}
           disabled={isUploading}
@@ -98,8 +103,8 @@ export default function DocumentUpload({ onUploadSuccess }) {
         {isUploading ? (
           <div className="upload-state">
             <Loader2 size={32} className="spin-icon upload-icon-spin" />
-            <p className="upload-title">Extracting Text with PyMuPDF...</p>
-            <p className="upload-sub">Processing locally on PC5 (max 50,000 chars)</p>
+            <p className="upload-title">Extracting text (local OCR for scans & images)...</p>
+            <p className="upload-sub">Scanned pages take ~25 s each with PaddleOCR on PC5</p>
           </div>
         ) : (
           <div className="upload-state">
@@ -109,7 +114,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
             <p className="upload-title">
               <strong>Click to upload</strong> or drag & drop file here
             </p>
-            <p className="upload-sub">PDF or TXT only (Max 15MB)</p>
+            <p className="upload-sub">PDF, TXT, PNG or JPG (Max 15MB) · scans are OCR'd locally</p>
           </div>
         )}
       </div>

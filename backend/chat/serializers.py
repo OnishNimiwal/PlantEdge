@@ -3,7 +3,10 @@ import binascii
 
 from rest_framework import serializers
 
-from .model_registry import MODEL_REGISTRY, get_default_model_id
+from .model_registry import MODEL_REGISTRY
+
+# Special model value: let chat/router.py pick the model.
+AUTO_MODEL = "auto"
 
 # Image formats accepted by the local vision model, identified by magic bytes.
 IMAGE_SIGNATURES = (
@@ -15,9 +18,9 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 class ChatSerializer(serializers.Serializer):
     message = serializers.CharField(required=True, allow_blank=False)
-    # Optional for backward compatibility: omitted -> DEFAULT_CHAT_MODEL.
-    model = serializers.CharField(required=False, allow_blank=False)
-    # Base64-encoded images (a data: URL prefix is tolerated). Vision models only.
+    # "auto" (default when omitted) -> router picks; a registry id -> manual choice.
+    model = serializers.CharField(required=False, allow_blank=False, default=AUTO_MODEL)
+    # Base64-encoded images (a data: URL prefix is tolerated). Vision models / auto only.
     images = serializers.ListField(
         child=serializers.CharField(allow_blank=False),
         required=False,
@@ -25,9 +28,10 @@ class ChatSerializer(serializers.Serializer):
     )
 
     def validate_model(self, value):
-        if value not in MODEL_REGISTRY:
+        if value != AUTO_MODEL and value not in MODEL_REGISTRY:
             raise serializers.ValidationError(
-                f"Unknown model '{value}'. Available models: {', '.join(MODEL_REGISTRY)}."
+                f"Unknown model '{value}'. Available models: "
+                f"{', '.join([AUTO_MODEL, *MODEL_REGISTRY])}."
             )
         return value
 
@@ -48,8 +52,8 @@ class ChatSerializer(serializers.Serializer):
         return cleaned
 
     def validate(self, attrs):
-        attrs.setdefault("model", get_default_model_id())
-        if attrs.get("images") and not MODEL_REGISTRY[attrs["model"]].supports_images:
+        model = attrs["model"]
+        if attrs.get("images") and model != AUTO_MODEL and not MODEL_REGISTRY[model].supports_images:
             raise serializers.ValidationError(
                 {"images": f"Model '{attrs['model']}' does not accept images. Select a vision model."}
             )

@@ -13,18 +13,16 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  // Local model registry (manual selection; no automatic routing)
+  // Local model registry. 'auto' = backend router picks; a model id = manual choice.
   const [models, setModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState(null);
+  const [selectedModel, setSelectedModel] = useState('auto');
 
   useEffect(() => {
-    fetchModels().then((data) => {
-      setModels(data.models || []);
-      setSelectedModel(data.default || data.models?.[0]?.id || null);
-    });
+    fetchModels().then((data) => setModels(data.models || []));
   }, []);
 
-  const modelName = (id) => models.find((m) => m.id === id)?.name || id;
+  const modelName = (id) =>
+    id === 'auto' ? 'Auto (router)' : models.find((m) => m.id === id)?.name || id;
 
   const formatTime = () => {
     const now = new Date();
@@ -55,7 +53,8 @@ export default function App() {
           sender: 'bot',
           text: result.response,
           time: formatTime(),
-          model: modelName(result.model) || 'local-ollama',
+          model: result.ollama_model || modelName(result.model) || 'local-ollama',
+          routing: result.routing?.reason || null,
         };
         setMessages((prev) => [...prev, botMsg]);
       } else {

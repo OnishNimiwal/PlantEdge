@@ -69,10 +69,13 @@ def get_default_model_id() -> str:
 
 
 def get_model(model_id: str) -> LocalModel:
-    try:
+    """Look up a model by registry id ("qwen3") or Ollama tag ("qwen3:8b")."""
+    if model_id in MODEL_REGISTRY:
         return MODEL_REGISTRY[model_id]
-    except KeyError:
-        raise UnknownModelError(model_id) from None
+    for model in MODEL_REGISTRY.values():
+        if model.ollama_name == model_id:
+            return model
+    raise UnknownModelError(model_id)
 
 
 def list_models() -> list:

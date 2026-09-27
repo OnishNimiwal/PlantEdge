@@ -12,6 +12,7 @@ import {
   Check,
   Loader2,
   AlertTriangle,
+  ScanText,
 } from 'lucide-react';
 import DocumentQuestionBox from './DocumentQuestionBox';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
@@ -19,6 +20,7 @@ import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi
 export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
   const [activeTab, setActiveTab] = useState('qa'); // 'qa' | 'summary' | 'text'
   const [summary, setSummary] = useState(null);
+  const [summaryMeta, setSummaryMeta] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState(null);
 
@@ -47,6 +49,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
       const res = await summarizeDocument(document.id);
       if (res && res.success && res.summary) {
         setSummary(res.summary);
+        setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason });
       } else {
         setSummaryError(res?.error || "Failed to generate summary from local AI.");
       }
@@ -107,6 +110,13 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
               <Layers size={13} />
               {(document.extracted_text || "").length.toLocaleString()} / 50,000 chars
             </span>
+            {document.ocr_pages > 0 && (
+              <span className="meta-badge ocr" title="Text extracted locally with PaddleOCR">
+                <ScanText size={13} />
+                OCR · {document.ocr_pages} page{document.ocr_pages > 1 ? 's' : ''}
+                {document.ocr_confidence != null && ` · ${Math.round(document.ocr_confidence * 100)}% confidence`}
+              </span>
+            )}
             {(document.extracted_text || "").length >= 50000 && (
               <span className="meta-badge warning" title="Text was capped at 50,000 characters">
                 <AlertTriangle size={12} /> Capped at 50k
@@ -215,6 +225,14 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
               <div className="summary-card">
                 <div className="summary-card-header">
                   <h3>Executive Summary</h3>
+                  {summaryMeta?.model && (
+                    <span className="doc-model-tags">
+                      <span className="message-model-tag">Model: {summaryMeta.model}</span>
+                      {summaryMeta.routing && (
+                        <span className="message-model-tag message-routing-tag">Routing: {summaryMeta.routing}</span>
+                      )}
+                    </span>
+                  )}
                   <button
                     className="copy-btn"
                     onClick={() => handleCopyText(summary, true)}
