@@ -59,12 +59,14 @@ export async function getDocument(id) {
   }
 }
 
-export async function askDocument(id, question) {
+export async function askDocument(id, question, conversationId) {
   try {
+    const body = { question };
+    if (conversationId) body.conversation_id = conversationId;
     const response = await fetch(`${API_BASE}/api/documents/${id}/ask/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify(body),
     });
 
     const data = await response.json();

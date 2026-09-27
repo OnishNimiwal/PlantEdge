@@ -21,11 +21,12 @@ function extractError(data, status) {
  * @param {string} [model]   registry id, e.g. "qwen3" (omitted -> backend default)
  * @param {string[]} [images] base64 / data-URL images (vision models only)
  */
-export async function sendMessage(message, model, images) {
+export async function sendMessage(message, model, images, conversationId) {
   const url = `${API_BASE}/api/chat/`;
   const body = { message };
   if (model) body.model = model;
   if (images && images.length) body.images = images;
+  if (conversationId) body.conversation_id = conversationId;
 
   try {
     const response = await fetch(url, {
@@ -64,5 +65,30 @@ export async function fetchModels() {
     return await response.json();
   } catch {
     return { models: [], default: null };
+  }
+}
+
+/** Load a backend-held conversation (history is stored server-side). */
+export async function getConversation(id) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/conversations/${id}/`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.conversation || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Most recent conversation for a document (Document Assistant Q&A), or null. */
+export async function getLatestDocumentConversation(documentId) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/conversations/?document=${documentId}`);
+    if (!response.ok) return null;
+    const data = await response.json();
+    const latest = (data.conversations || [])[0];
+    return latest ? getConversation(latest.id) : null;
+  } catch {
+    return null;
   }
 }

@@ -1519,3 +1519,37 @@
   font-size: 0.72rem;
   color: var(--badge-amber-text);
 }
+
+/* ===== Conversation context ===== */
+.new-chat-button,
+.qa-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+
+.qa-new-btn {
+  padding: 0.45rem;
+  margin-right: 0;
+}
+
+.new-chat-button:hover:not(:disabled),
+.qa-new-btn:hover:not(:disabled) {
+  color: var(--accent-primary);
+  border-color: var(--border-focus);
+}
+
+.new-chat-button:disabled,
+.qa-new-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

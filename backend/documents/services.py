@@ -22,6 +22,7 @@ from chat.model_manager import (
 )
 from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISION
 from chat.model_registry import get_model
+from chat import context as chat_context
 
 logger = logging.getLogger(__name__)
 
@@ -87,13 +88,16 @@ def _run(model: str, prompt: str, images=None) -> dict:
         raise OllamaServiceError(exc.public_message) from exc
 
 
-def ask_document_question(document, question: str) -> dict:
+def ask_document_question(document, question: str, conversation_id=None) -> dict:
     """
-    Answer a question about a document using the routed local model.
-    Returns {"answer", "model", "ollama_model", "routing"}.
+    Answer a question about a document using the routed local model, with the
+    document's conversation history (backend-held, see chat/context.py).
+    Returns {"answer", "model", "ollama_model", "routing", "context", "conversation_id"}.
     """
+    conv = chat_context.load(conversation_id, document=document)
     has_visual = document.file_type in ("PDF", "PNG", "JPG") and bool(document.file)
-    decision = route_model(question, context={"image_available": has_visual})
+    signals = chat_context.signals(conv)
+    decision = route_model(question, context={**signals, "image_available": has_visual})
     images = None
     context_info = {"document_chars": len(document.extracted_text), "context_chars_used": 0,
                     "context_truncated": False}
@@ -108,40 +112,51 @@ def ask_document_question(document, question: str) -> dict:
             decision = route_model("")
 
     if images:
-        prompt = (
+        system = (
             f"You are an on-premise local AI assistant. The attached image is the document "
             f"'{document.original_name}'"
-            f"{' (page 1)' if document.file_type == 'PDF' else ''}.\n"
-            "Answer the user's question based on what you can see in the image.\n\n"
-            f"USER QUESTION: {question}\n\nANSWER:"
+            f"{' (page 1)' if document.file_type == 'PDF' else ''}. "
+            "Answer the user's questions based on what you can see in the image."
         )
     else:
+        # Leave a quarter of the budget for conversation history.
+        history_reserve = int(prompt_budget_tokens(get_model(decision["model"])) * CHARS_PER_TOKEN) // 4
         doc_text, context_info = fit_to_context(
-            document.extracted_text, decision["model"], reserved_chars=1500 + len(question)
+            document.extracted_text, decision["model"],
+            reserved_chars=1500 + len(question) + history_reserve,
         )
-        prompt = (
+        system = (
             f"You are an on-premise local AI assistant analyzing the document '{document.original_name}'.\n"
-            "Answer the user's question thoroughly and accurately based on the provided document content.\n"
+            "Answer the user's questions thoroughly and accurately based on the provided document content.\n"
             "If the answer cannot be determined from the document, clearly mention that.\n"
             f"{_ocr_note(document)}\n"
             "=== DOCUMENT CONTENT ===\n"
             f"{doc_text}\n"
-            "=== END DOCUMENT CONTENT ===\n\n"
-            f"USER QUESTION: {question}\n\n"
-            "ANSWER:"
+            "=== END DOCUMENT CONTENT ==="
         )
 
-    logger.info(
-        "Document question: doc_id=%s method=%s reason=%s model=%s with_image=%s",
-        document.id, document.extraction_method, decision["reason"], decision["model"], bool(images),
+    messages, history_info = chat_context.build_messages(
+        conv, question, decision["model"], new_images=images, system=system,
     )
-    result = _run(decision["model"], prompt, images=images)
+    logger.info(
+        "Document question: doc_id=%s method=%s reason=%s model=%s with_image=%s history=%d",
+        document.id, document.extraction_method, decision["reason"], decision["model"], bool(images),
+        history_info["history_messages_used"],
+    )
+    try:
+        result = generate_response(decision["model"], messages=messages)
+    except ModelManagerError as exc:
+        raise OllamaServiceError(exc.public_message) from exc
+    # The document image is re-rendered on demand, so it is not stored as an attachment.
+    chat_context.record_turn(conv, question, result["response"], model_tag=result["ollama_model"],
+                             reason=decision["reason"])
     return {
         "answer": result["response"],
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
-        "context": context_info,
+        "context": {**context_info, **history_info},
+        "conversation_id": str(conv.id),
     }
 
 

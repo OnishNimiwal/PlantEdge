@@ -131,7 +131,9 @@ class DocumentAskView(APIView):
         question = serializer.validated_data["question"]
 
         try:
-            result = ask_document_question(doc, question)
+            result = ask_document_question(
+                doc, question, conversation_id=serializer.validated_data.get("conversation_id")
+            )
             return Response({"success": True, **result, "external_api": False})
         except OllamaServiceError as exc:
             return Response(

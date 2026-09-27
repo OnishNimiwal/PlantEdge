@@ -1,4 +1,5 @@
 import base64
+import io
 from unittest.mock import patch, Mock
 
 import requests
@@ -24,11 +25,38 @@ def make_image_b64(width=64, height=32, fmt="PNG"):
 
 PNG_B64 = make_image_b64()
 
+# Keep test uploads (chat attachments) out of the real media folder.
+import shutil as _shutil
+import tempfile as _tempfile
+_media_override = None
+
+
+def setUpModule():
+    global _media_override
+    _media_override = override_settings(MEDIA_ROOT=_tempfile.mkdtemp(prefix="mrpl-chat-test-"))
+    _media_override.enable()
+
+
+def tearDownModule():
+    from django.conf import settings as _settings
+    root = _settings.MEDIA_ROOT
+    _media_override.disable()
+    _shutil.rmtree(root, ignore_errors=True)
+
+
+def sent_user_message(mock_post):
+    """Last user message of the /api/chat payload sent to Ollama."""
+    return mock_post.call_args.kwargs["json"]["messages"][-1]
+
 
 def ollama_ok(text="ok"):
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"response": text, "done": True, "eval_count": 3}
+    # Works for both /api/generate ("response") and /api/chat ("message").
+    mock_response.json.return_value = {
+        "response": text, "message": {"role": "assistant", "content": text},
+        "done": True, "eval_count": 3,
+    }
     mock_response.raise_for_status = Mock()
     return mock_response
 
@@ -56,8 +84,8 @@ class ChatAPITests(APITestCase):
 
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
-        self.assertTrue(args[0].endswith("/api/generate"))
-        self.assertEqual(kwargs["json"]["prompt"], "Hello AI")
+        self.assertTrue(args[0].endswith("/api/chat"))
+        self.assertEqual(kwargs["json"]["messages"], [{"role": "user", "content": "Hello AI"}])
         self.assertEqual(kwargs["json"]["model"], "qwen3:8b")
         self.assertFalse(kwargs["json"]["stream"])
         self.assertNotIn("images", kwargs["json"])
@@ -107,7 +135,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["model"], "qwen-vl")
         self.assertEqual(response.data["routing"]["reason"], "vision")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["images"], [PNG_B64])
+        self.assertEqual(sent_user_message(mock_post)["images"], [PNG_B64])
 
     @patch("chat.model_manager.requests.Session.post")
     def test_routing_returned_on_error(self, mock_post):
@@ -204,7 +232,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(payload["model"], "qwen2.5vl:7b")
-        self.assertEqual(payload["images"], [PNG_B64])  # data: prefix stripped
+        self.assertEqual(payload["messages"][-1]["images"], [PNG_B64])  # data: prefix stripped
 
     @patch("chat.model_manager.requests.Session.post")
     def test_image_rejected_for_text_model(self, mock_post):
@@ -467,7 +495,7 @@ class ImageSafetyTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        sent = _Image.open(_io.BytesIO(base64.b64decode(mock_post.call_args.kwargs["json"]["images"][0])))
+        sent = _Image.open(_io.BytesIO(base64.b64decode(sent_user_message(mock_post)["images"][0])))
         self.assertEqual(sent.size, (1024, 576))  # aspect ratio preserved
         self.assertEqual(sent.format, "JPEG")
         info = response.data["images"][0]
@@ -479,7 +507,7 @@ class ImageSafetyTests(APITestCase):
         mock_post.return_value = ollama_ok()
         original = make_image_b64(800, 600)
         self.client.post(reverse("chat"), {"message": "Describe this image.", "images": [original]}, format="json")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["images"], [original])
+        self.assertEqual(sent_user_message(mock_post)["images"], [original])
 
     @override_settings(VISION_MAX_INPUT_PIXELS=1_000_000)
     def test_oversized_image_rejected_cleanly(self):
@@ -498,7 +526,7 @@ class ImageSafetyTests(APITestCase):
             {"message": "Compare these images.", "images": [PNG_B64] * 3}, format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(mock_post.call_args.kwargs["json"]["images"]), 3)
+        self.assertEqual(len(sent_user_message(mock_post)["images"]), 3)
         too_many = self.client.post(
             reverse("chat"),
             {"message": "Compare these images.", "images": [PNG_B64] * 4}, format="json",
@@ -588,3 +616,112 @@ class RoutingRulesTests(APITestCase):
         response = self.client.post(reverse("chat"), {"message": "Explain what a P&ID is."}, format="json")
         self.assertFalse(response.data.get("needs_image", False))
         self.assertEqual(response.data["ollama_model"], "qwen3:8b")
+
+
+class ConversationContextTests(APITestCase):
+    """Phase C: backend conversation history, earlier images, context-aware routing (L3, L10)."""
+
+    def post(self, body):
+        return self.client.post(reverse("chat"), body, format="json")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_history_is_sent_on_follow_up(self, mock_post):
+        mock_post.return_value = ollama_ok("Federated learning trains models without sharing data.")
+        first = self.post({"message": "Explain federated learning."})
+        conv_id = first.data["conversation_id"]
+        mock_post.return_value = ollama_ok("It protects privacy.")
+        second = self.post({"message": "Why is that useful?", "conversation_id": conv_id})
+        self.assertEqual(second.data["conversation_id"], conv_id)
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual([m["role"] for m in msgs], ["user", "assistant", "user"])
+        self.assertEqual(msgs[0]["content"], "Explain federated learning.")
+        self.assertIn("without sharing data", msgs[1]["content"])
+        self.assertEqual(second.data["context"]["history_messages_used"], 2)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_follow_up_about_previous_image_reuses_it_with_vl(self, mock_post):
+        mock_post.return_value = ollama_ok("A pump, a valve and a tank.")
+        first = self.post({"message": "Analyze this engineering drawing.", "images": [PNG_B64]})
+        self.assertEqual(first.data["ollama_model"], "qwen2.5vl:7b")
+        mock_post.return_value = ollama_ok("The tank.")
+        second = self.post({"message": "Which component is the largest?",
+                            "conversation_id": first.data["conversation_id"]})
+        self.assertEqual(second.data["ollama_model"], "qwen2.5vl:7b")
+        self.assertEqual(second.data["routing"]["reason"], "vision")
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual(msgs[0]["images"], [PNG_B64])        # earlier image re-sent
+        self.assertNotIn("images", msgs[-1])                  # nothing new attached
+        self.assertEqual(second.data["context"]["reused_images"], 1)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_text_model_gets_image_placeholder_not_image(self, mock_post):
+        mock_post.return_value = ollama_ok("A pump and a valve.")
+        first = self.post({"message": "Analyze this drawing.", "images": [PNG_B64]})
+        mock_post.return_value = ollama_ok("def count(): ...")
+        second = self.post({"message": "Now write a Python script that counts them.",
+                            "conversation_id": first.data["conversation_id"]})
+        self.assertEqual(second.data["ollama_model"], "qwen2.5-coder:7b")
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertTrue(all("images" not in m for m in msgs))
+        self.assertIn("[user attached 1 image(s)]", msgs[0]["content"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_unknown_conversation_starts_new_one(self, mock_post):
+        mock_post.return_value = ollama_ok()
+        response = self.post({"message": "hi", "conversation_id": "00000000-0000-0000-0000-000000000000"})
+        self.assertNotEqual(response.data["conversation_id"], "00000000-0000-0000-0000-000000000000")
+        self.assertEqual(len(mock_post.call_args.kwargs["json"]["messages"]), 1)
+
+    @override_settings(OLLAMA_NUM_CTX=2048)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_history_bounded_by_context_budget(self, mock_post):
+        from .models import Conversation, ChatMessage
+        conv = Conversation.objects.create()
+        for i in range(10):
+            ChatMessage.objects.create(conversation=conv, role="user", content=f"q{i} " + "x" * 900)
+            ChatMessage.objects.create(conversation=conv, role="assistant", content=f"a{i} " + "y" * 900)
+        mock_post.return_value = ollama_ok()
+        response = self.post({"message": "latest?", "conversation_id": str(conv.id)})
+        ctx = response.data["context"]
+        self.assertTrue(ctx["history_truncated"])
+        self.assertLess(ctx["history_messages_used"], 12)
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual(msgs[-1]["content"], "latest?")
+        self.assertTrue(msgs[-2]["content"].startswith("a9"))  # newest history kept
+        self.assertLess(sum(len(m["content"]) for m in msgs) / 3.0, 2048)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_needs_image_turn_recorded_and_conversation_endpoint(self, mock_post):
+        first = self.post({"message": "Analyze this P&ID."})
+        conv_id = first.data["conversation_id"]
+        mock_post.return_value = ollama_ok("Pumps and valves.")
+        self.post({"message": "Analyze this P&ID.", "images": [PNG_B64], "conversation_id": conv_id})
+        detail = self.client.get(reverse("conversation-detail", kwargs={"pk": conv_id}))
+        msgs = detail.data["conversation"]["messages"]
+        self.assertEqual(len(msgs), 4)
+        self.assertIn("attach", msgs[1]["content"])
+        self.assertEqual(len(msgs[2]["images"]), 1)
+        self.assertEqual(msgs[3]["model"], "qwen2.5vl:7b")
+        listing = self.client.get(reverse("conversation-list"))
+        self.assertEqual(listing.data["conversations"][0]["id"], conv_id)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_deleting_conversation_removes_image_files(self, mock_post):
+        import os
+        from .models import ChatAttachment
+        mock_post.return_value = ollama_ok()
+        conv_id = self.post({"message": "Describe this image.", "images": [PNG_B64]}).data["conversation_id"]
+        path = ChatAttachment.objects.get().file.path
+        self.assertTrue(os.path.isfile(path))
+        self.client.delete(reverse("conversation-detail", kwargs={"pk": conv_id}))
+        self.assertFalse(os.path.isfile(path))
+
+    def test_cleanup_command_conversations(self):
+        from django.core.management import call_command
+        from .models import Conversation
+        Conversation.objects.create(title="old test")
+        out = io.StringIO()
+        call_command("cleanup_dev_data", "--conversations", "--all", stdout=out)
+        self.assertIn("Dry run", out.getvalue())
+        call_command("cleanup_dev_data", "--conversations", "--all", "--yes", stdout=io.StringIO())
+        self.assertEqual(Conversation.objects.count(), 0)

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, ImagePlus, X } from 'lucide-react';
+import { Send, Loader2, ImagePlus, X, SquarePen } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
 // Large images exhaust the 8 GB GPU in the vision model. The backend enforces the
@@ -32,6 +32,8 @@ export default function MessageInput({
   selectedModel,
   onModelChange,
   limits,
+  onNewChat,
+  hasHistory,
 }) {
   const maxImages = limits?.max_images_per_message || 1;
   const maxSide = limits?.vision_max_side || 1024;
@@ -177,6 +179,18 @@ export default function MessageInput({
         </button>
       </div>
       <div className="input-footer">
+        {onNewChat && (
+          <button
+            type="button"
+            className="new-chat-button"
+            onClick={onNewChat}
+            disabled={disabled || !hasHistory}
+            title="Start a new conversation (the current one stays saved on the server)"
+          >
+            <SquarePen size={13} />
+            <span>New chat</span>
+          </button>
+        )}
         <ModelSelector
           models={models}
           value={selectedModel}

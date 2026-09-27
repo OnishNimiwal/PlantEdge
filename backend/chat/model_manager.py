@@ -180,6 +180,36 @@ class ModelManager:
             "context_overflow": estimate_tokens(prompt, len(images or [])) > context_window(model),
         }
 
+    def chat(self, model_id, messages) -> dict:
+        """
+        Multi-turn generation via Ollama /api/chat.
+
+        `messages`: [{"role": "system"|"user"|"assistant", "content": str,
+                      "images": [base64, ...] (optional, multimodal models only)}]
+        Returns the same shape as generate().
+        """
+        model = get_model(model_id or get_default_model_id())
+        ensure_local_endpoint(self.base_url)
+        image_count = sum(len(m.get("images") or []) for m in messages)
+        if image_count and not model.supports_images:
+            raise ModelRequestError(f"Model '{model.id}' does not accept images.")
+        payload = {
+            "model": model.ollama_name,
+            "messages": messages,
+            "stream": False,
+            **self._options(model),
+        }
+        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+        data, duration = self._post("/api/chat", payload, model, prompt_chars, image_count)
+        return {
+            "response": ((data.get("message") or {}).get("content") or "").strip(),
+            "model": model.id,
+            "ollama_model": model.ollama_name,
+            "duration_ms": duration,
+            "context_overflow": (int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE)
+            > context_window(model),
+        }
+
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
         # Log metadata only - never prompt or image contents.
         estimated = int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE
@@ -246,11 +276,15 @@ class ModelManager:
         return data, duration
 
 
-def generate_response(model: str, prompt: str, images=None) -> dict:
+def generate_response(model: str, prompt: str = None, images=None, messages=None) -> dict:
     """
-    Execution-layer entry point: run `prompt` on the model chosen by the router.
+    Execution-layer entry point: run a request on the model chosen by the router.
 
     `model` is the router's Ollama tag (e.g. "qwen2.5-coder:7b") or a registry id.
+    Either a single `prompt` (+ optional `images`) or a list of chat `messages`
+    (conversation history built by chat/context.py).
     Returns {"response", "model", "ollama_model", "duration_ms", "context_overflow"}.
     """
-    return ModelManager().generate(model, prompt, images=images)
+    if messages is not None:
+        return ModelManager().chat(model, messages)
+    return ModelManager().generate(model, prompt or "", images=images)

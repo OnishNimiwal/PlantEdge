@@ -220,6 +220,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
       <div className="doc-viewer-body">
         {activeTab === 'qa' && (
           <DocumentQuestionBox
+            key={document.id}
             documentId={document.id}
             documentName={document.original_name}
           />

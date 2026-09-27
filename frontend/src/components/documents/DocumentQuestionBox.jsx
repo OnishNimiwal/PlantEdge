@@ -1,6 +1,9 @@
-import React, { useState } from 'react';
-import { Send, Bot, User, Copy, Check, Loader2, AlertCircle } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Send, Bot, User, Copy, Check, Loader2, AlertCircle, SquarePen } from 'lucide-react';
 import { askDocument } from '../../api/documentApi';
+import { getLatestDocumentConversation } from '../../api/chatApi';
+
+const fmtTime = (d) => new Date(d).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 export default function DocumentQuestionBox({ documentId, documentName }) {
   const [question, setQuestion] = useState('');
@@ -8,6 +11,30 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [copiedIdx, setCopiedIdx] = useState(null);
+  const [conversationId, setConversationId] = useState(null);
+
+  // Restore this document's latest Q&A conversation from the backend.
+  useEffect(() => {
+    let cancelled = false;
+    getLatestDocumentConversation(documentId).then((conv) => {
+      if (cancelled || !conv) return;
+      setConversationId(conv.id);
+      setConversation(conv.messages.map((m) => ({
+        sender: m.role === 'user' ? 'user' : 'bot',
+        text: m.content,
+        time: fmtTime(m.created_at),
+        model: m.role === 'assistant' ? m.model : null,
+        routing: m.role === 'assistant' ? m.routing_reason : null,
+      })));
+    });
+    return () => { cancelled = true; };
+  }, [documentId]);
+
+  const handleNewConversation = () => {
+    setConversationId(null);
+    setConversation([]);
+    setError(null);
+  };
 
   const handleAsk = async (e) => {
     if (e) e.preventDefault();
@@ -21,7 +48,8 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
     setLoading(true);
 
     try {
-      const res = await askDocument(documentId, q);
+      const res = await askDocument(documentId, q, conversationId);
+      if (res?.conversation_id) setConversationId(res.conversation_id);
       if (res && res.success && res.answer) {
         const botItem = {
           sender: 'bot',
@@ -123,6 +151,15 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
       </div>
 
       <form className="qa-input-row" onSubmit={handleAsk}>
+        <button
+          type="button"
+          className="qa-new-btn"
+          onClick={handleNewConversation}
+          disabled={loading || conversation.length === 0}
+          title="Start a new Q&A conversation for this document"
+        >
+          <SquarePen size={15} />
+        </button>
         <input
           type="text"
           value={question}

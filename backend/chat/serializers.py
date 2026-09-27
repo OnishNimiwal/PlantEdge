@@ -17,6 +17,8 @@ class ChatSerializer(serializers.Serializer):
     message = serializers.CharField(required=True, allow_blank=False)
     # "auto" (default when omitted) -> router picks; a registry id -> manual choice.
     model = serializers.CharField(required=False, allow_blank=False, default=AUTO_MODEL)
+    # Conversation to continue (omitted/unknown -> a new conversation is started).
+    conversation_id = serializers.UUIDField(required=False, allow_null=True)
     # Base64-encoded images (a data: URL prefix is tolerated). Vision models / auto only.
     images = serializers.ListField(
         child=serializers.CharField(allow_blank=False),

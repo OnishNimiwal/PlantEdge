@@ -89,7 +89,7 @@ class DocumentAPITests(APITestCase):
         """Test asking a question about an uploaded document."""
         mock_resp = Mock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"response": "The document specifies on-premise inference on PC5."}
+        mock_resp.json.return_value = {"response": "The document specifies on-premise inference on PC5.", "message": {"role": "assistant", "content": "The document specifies on-premise inference on PC5."}}
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
@@ -111,7 +111,7 @@ class DocumentAPITests(APITestCase):
         """Test generating an AI summary of an uploaded document."""
         mock_resp = Mock()
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {"response": "1. Executive Overview: Project completed successfully."}
+        mock_resp.json.return_value = {"response": "1. Executive Overview: Project completed successfully.", "message": {"role": "assistant", "content": "1. Executive Overview: Project completed successfully."}}
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
@@ -194,7 +194,7 @@ class DocumentAPITests(APITestCase):
         with patch("chat.model_manager.requests.Session.post") as mock_post:
             mock_resp = Mock()
             mock_resp.status_code = 200
-            mock_resp.json.return_value = {"response": "Phase 1 chat response"}
+            mock_resp.json.return_value = {"response": "Phase 1 chat response", "message": {"role": "assistant", "content": "Phase 1 chat response"}}
             mock_resp.raise_for_status = Mock()
             mock_post.return_value = mock_resp
 
@@ -239,10 +239,23 @@ def make_scanned_pdf_bytes(pages=1, text_pages=()) -> bytes:
     return data
 
 
+def chat_prompt(payload):
+    """All text sent to Ollama (/api/chat messages or /api/generate prompt)."""
+    if "messages" in payload:
+        return "\n".join(m["content"] for m in payload["messages"])
+    return payload["prompt"]
+
+
+def chat_images(payload):
+    if "messages" in payload:
+        return payload["messages"][-1].get("images")
+    return payload.get("images")
+
+
 def ok_response(text):
     resp = Mock()
     resp.status_code = 200
-    resp.json.return_value = {"response": text}
+    resp.json.return_value = {"response": text, "message": {"role": "assistant", "content": text}}
     resp.raise_for_status = Mock()
     return resp
 
@@ -343,9 +356,9 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual(response.data["ollama_model"], "qwen3:8b")
         self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "auto", "reason": "general_reasoning"})
         payload = mock_post.call_args.kwargs["json"]
-        self.assertIn("shell corrosion near saddle", payload["prompt"])
-        self.assertIn("produced by local OCR", payload["prompt"])
-        self.assertNotIn("images", payload)
+        self.assertIn("shell corrosion near saddle", chat_prompt(payload))
+        self.assertIn("produced by local OCR", chat_prompt(payload))
+        self.assertIsNone(chat_images(payload))
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A pump symbol."))
     def test_visual_question_sends_image_to_vision_model(self, mock_post):
@@ -361,8 +374,8 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
         self.assertEqual(response.data["routing"]["reason"], "vision")
         payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(len(payload["images"]), 1)
-        sent = pymupdf.Pixmap(base64.b64decode(payload["images"][0]))
+        self.assertEqual(len(chat_images(payload)), 1)
+        sent = pymupdf.Pixmap(base64.b64decode(chat_images(payload)[0]))
         self.assertLessEqual(max(sent.width, sent.height), 1024)  # downscaled for 8 GB VRAM
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A title block."))
@@ -376,7 +389,7 @@ class DocumentOCRTests(APITestCase):
             {"question": "What does the drawing show?"}, format="json",
         )
         self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
-        self.assertEqual(len(mock_post.call_args.kwargs["json"]["images"]), 1)
+        self.assertEqual(len(chat_images(mock_post.call_args.kwargs["json"])), 1)
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
     def test_visual_question_on_txt_falls_back_to_text_model(self, mock_post):
@@ -387,7 +400,7 @@ class DocumentOCRTests(APITestCase):
         )
         self.assertEqual(response.data["ollama_model"], "qwen3:8b")
         self.assertEqual(response.data["routing"]["reason"], "general_reasoning")
-        self.assertNotIn("images", mock_post.call_args.kwargs["json"])
+        self.assertIsNone(chat_images(mock_post.call_args.kwargs["json"]))
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("coded"))
     def test_coding_question_routes_to_coder(self, mock_post):
@@ -458,9 +471,9 @@ class DocumentLimitTests(APITestCase):
         self.assertTrue(ctx["context_truncated"])
         self.assertEqual(ctx["document_chars"], 50000)
         self.assertLess(ctx["context_chars_used"], 20000)
-        prompt = mock_post.call_args.kwargs["json"]["prompt"]
+        prompt = chat_prompt(mock_post.call_args.kwargs["json"])
         self.assertLess(len(prompt) / 3.0, 8192)  # whole prompt fits, so Ollama will not halve it
-        self.assertIn("USER QUESTION: What is the reading?", prompt)  # instructions survive
+        self.assertIn("What is the reading?", prompt)  # question survives
         self.assertIn("fit in the model context window", prompt)
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
@@ -484,3 +497,27 @@ class CleanupCommandTests(APITestCase):
         self.assertTrue(Document.objects.filter(pk=keep.pk).exists())
         with self.assertRaises(CommandError):
             call_command("cleanup_dev_data", stdout=io.StringIO())  # no filter -> refuse
+
+
+class DocumentConversationTests(APITestCase):
+    """Phase C: Document Assistant Q&A keeps per-document history (L30)."""
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_document_follow_up_includes_previous_answer(self, mock_post):
+        doc = Document.objects.create(original_name="r.txt", file_type="TXT",
+                                      extracted_text="Finding: corrosion on E-2104A shell.")
+        other = Document.objects.create(original_name="o.txt", file_type="TXT", extracted_text="Other.")
+        url = reverse("document-ask", kwargs={"pk": doc.id})
+        mock_post.return_value = ok_response("Corrosion on the E-2104A shell.")
+        first = self.client.post(url, {"question": "What was found?"}, format="json")
+        conv_id = first.data["conversation_id"]
+        mock_post.return_value = ok_response("Within 30 days.")
+        self.client.post(url, {"question": "How urgent is it?", "conversation_id": conv_id}, format="json")
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual([m["role"] for m in msgs], ["system", "user", "assistant", "user"])
+        self.assertIn("corrosion on E-2104A shell", msgs[0]["content"])
+        self.assertEqual(msgs[1]["content"], "What was found?")
+        # A conversation belongs to one document: reusing its id on another starts fresh.
+        self.client.post(reverse("document-ask", kwargs={"pk": other.id}),
+                         {"question": "Anything?", "conversation_id": conv_id}, format="json")
+        self.assertEqual(len(mock_post.call_args.kwargs["json"]["messages"]), 2)

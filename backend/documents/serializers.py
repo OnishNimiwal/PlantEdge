@@ -67,6 +67,7 @@ class DocumentUploadSerializer(serializers.Serializer):
 
 class DocumentAskSerializer(serializers.Serializer):
     question = serializers.CharField(required=True, allow_blank=False, max_length=2000)
+    conversation_id = serializers.UUIDField(required=False, allow_null=True)
 
 class DocumentReportSerializer(serializers.Serializer):
     summary = serializers.CharField(required=False, allow_blank=True, default="")
