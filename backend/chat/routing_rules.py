@@ -14,6 +14,9 @@ properties   - visual properties (colour, shape, position...). Only mean "vision
                an image is attached or available from the conversation/document.
 followup     - words that refer back to a previous turn ("it", "which component").
 text_extraction - "read / transcribe / extract the text" (used for OCR routing).
+document_text_task - summarise / list findings etc.: with an attached image this is
+               answered from OCR text (qwen3); together with a visual question the
+               vision model gets both the image and the OCR text.
 negative     - phrases that neutralise a keyword used in a non-technical sense.
 """
 
@@ -81,6 +84,12 @@ VISION_TARGET = [
     rf"(?:the\s+)?(?:\w+\s+){{0,2}}{VISUAL_NOUNS}",
 ]
 
+# Weaker target ("the drawing", "the P&ID"): only counts when an image/document is
+# available, so "Explain the P&ID symbols for valves" without an image stays general.
+VISION_TARGET_IF_AVAILABLE = [
+    rf"\bthe\s+(?:\w+\s+){{0,2}}{VISUAL_NOUNS}",
+]
+
 VISION_ACTIONS = [
     r"\bvisual(?:ly)? inspect\w*\b", r"\blook at\b", r"\bcan you see\b", r"\bwhat do you see\b",
     r"\bvisible in\b", r"\bshown in\b", r"\bdepicted\b", r"\bin the (?:picture|photo|image)\b",
@@ -105,4 +114,18 @@ FOLLOWUP_MARKERS = [
 TEXT_EXTRACTION = [
     r"\b(?:read|transcribe|extract|copy)\s+(?:out\s+)?(?:all\s+)?(?:the\s+)?(?:text|words|writing|content)\b",
     r"\bwhat does (?:it|this|the \w+) say\b", r"\bocr\b", r"\btext (?:in|from|on) (?:the|this)\b",
+]
+
+DOCUMENT_TEXT_TASK = [
+    r"\bsummari[sz]e\b", r"\bsummary\b", r"\bkey (?:findings|points|details|items)\b",
+    r"\blist (?:all\s+)?(?:the\s+)?(?:findings|recommendations|actions|items|values|readings|dates)\b",
+    r"\bwhat (?:are|were) the (?:findings|recommendations|readings|values)\b",
+    r"\b(?:inspection|test|maintenance) report\b", r"\btranslate\b",
+]
+
+# Visual questions for the OCR-vs-vision decision (in addition to VISUAL_PROPERTIES).
+VISUAL_QUESTION = [
+    r"\bdescribe\b", r"\bwhat (?:is|does it|do you) (?:shown|show|see)\b", r"\blook(?:s)? like\b",
+    r"\bdiagram\b", r"\bdrawing\b", r"\bp&id\b", r"\bphoto\b", r"\bpicture\b", r"\bsymbols?\b",
+    r"\bvisual\w*\b", r"\bidentify\b", r"\bdamage\w*\b", r"\bcorro\w+ (?:visible|shown)\b",
 ]

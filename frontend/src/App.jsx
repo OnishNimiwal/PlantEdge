@@ -115,7 +115,12 @@ export default function App() {
           model: result.needs_image ? null : result.ollama_model || modelName(result.model) || 'local-ollama',
           routing: result.routing?.reason || null,
           routingExplanation: result.routing?.explanation || null,
-          notice: result.needs_image ? 'No model was called' : null,
+          notice: result.needs_image
+            ? 'No model was called'
+            : result.ocr?.length
+              ? `Local OCR on ${result.ocr.length} image${result.ocr.length > 1 ? 's' : ''} · recognition confidence ${result.ocr
+                  .map((o) => `${Math.round(o.confidence * 100)}%`).join(', ')}`
+              : null,
         };
         setMessages((prev) => [...prev, botMsg]);
       } else {

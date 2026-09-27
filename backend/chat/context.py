@@ -72,11 +72,15 @@ def _attachment_b64(att) -> str:
         att.file.close()
 
 
-def build_messages(conv, user_text, model_tag, new_images=None, system=None, reserved_chars=0):
+def build_messages(conv, user_text, model_tag, new_images=None, system=None, reserved_chars=0,
+                   extra_context=""):
     """
     Build Ollama chat messages: [system?] + bounded history + current user message.
+    `extra_context` (e.g. OCR text of the attached images) is appended to the current message.
     Returns (messages, info) where info reports what context was used.
     """
+    if extra_context:
+        user_text = f"{user_text}\n\n{extra_context}"
     model = get_model(model_tag)
     new_images = new_images or []
     budget = int(prompt_budget_tokens(model) * CHARS_PER_TOKEN) - len(user_text) - len(system or "") - reserved_chars
@@ -97,7 +101,7 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
     selected = []
     used = 0
     for m in reversed(history):  # newest first, stop when the budget is spent
-        content = m.content
+        content = f"{m.content}\n\n{m.extra_context}" if m.extra_context else m.content
         n_atts = len(m.attachments.all())
         if n_atts and not (m.id == reused_from):
             content = f"[user attached {n_atts} image(s)]\n{content}"
@@ -134,9 +138,12 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
     return messages, info
 
 
-def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images=None, image_info=None):
+def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images=None, image_info=None,
+                extra_context=""):
     """Persist one user/assistant exchange (and the user's prepared images)."""
-    user_msg = ChatMessage.objects.create(conversation=conv, role=ChatMessage.ROLE_USER, content=user_text)
+    user_msg = ChatMessage.objects.create(
+        conversation=conv, role=ChatMessage.ROLE_USER, content=user_text, extra_context=extra_context or "",
+    )
     for idx, b64 in enumerate(images or []):
         meta = image_info[idx] if image_info and idx < len(image_info) else {}
         ext = "jpg" if meta.get("format") == "JPEG" else "png"

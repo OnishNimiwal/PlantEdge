@@ -584,3 +584,34 @@ class OCRConfigurationTests(APITestCase):
         self.assertTrue(detect_complex_layout(table))
         one_split_line = single_column + [[100, 600, 300, 625], [600, 600, 900, 625]]
         self.assertFalse(detect_complex_layout(one_split_line))
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocumentVisionPagesTests(APITestCase):
+    """Phase E: PDF visual analysis beyond page 1, never all pages at once (L17)."""
+
+    def test_requested_pages(self):
+        from .processing import requested_pages
+        self.assertEqual(requested_pages("What does the drawing show?", 5), [1])
+        self.assertEqual(requested_pages("Describe the diagram on page 3", 5), [3])
+        self.assertEqual(requested_pages("Compare pages 2-4", 5), [2, 3])   # capped at 2
+        self.assertEqual(requested_pages("pages 4 to 9", 5), [4, 5])
+        self.assertEqual(requested_pages("page 12", 5), [1])               # out of range
+
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A title block."))
+    def test_page_reference_selects_rendered_page(self, mock_post):
+        doc = Document.objects.create(
+            original_name="scan.pdf", file_type="PDF", extraction_method="ocr", extracted_text="x" * 30,
+            page_count=3, file=SimpleUploadedFile("scan.pdf", make_scanned_pdf_bytes(pages=3)),
+        )
+        response = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                                    {"question": "What does the drawing on page 3 show?"}, format="json")
+        self.assertEqual(response.data["vision_pages"], [3])
+        self.assertEqual(response.data["page_count"], 3)
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(len(chat_images(payload)), 1)
+        self.assertIn("page 3 of 3", payload["messages"][0]["content"])
+        both = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                                {"question": "Describe the drawings on pages 1-3"}, format="json")
+        self.assertEqual(both.data["vision_pages"], [1, 2])
+        self.assertEqual(len(chat_images(mock_post.call_args.kwargs["json"])), 2)

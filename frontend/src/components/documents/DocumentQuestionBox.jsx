@@ -58,6 +58,8 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
           model: res.ollama_model,
           routing: res.routing?.reason,
           context: res.context,
+          visionPages: res.vision_pages,
+          pageCount: res.page_count,
         };
         setConversation((prev) => [...prev, botItem]);
       } else {
@@ -104,6 +106,12 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
                   )}
                   <div className={`qa-bubble ${isUser ? 'user' : 'bot'}`}>
                     <p>{msg.text}</p>
+                    {msg.visionPages?.length > 0 && msg.pageCount > 1 && (
+                      <span className="context-note">
+                        Visual analysis used page{msg.visionPages.length > 1 ? 's' : ''}{' '}
+                        {msg.visionPages.join(', ')} of {msg.pageCount}. Mention "page N" in your question to look at another page.
+                      </span>
+                    )}
                     {msg.context?.context_truncated && (
                       <span className="context-note">
                         Answer based on the first {msg.context.context_chars_used.toLocaleString()} of{' '}

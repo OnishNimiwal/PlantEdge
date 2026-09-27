@@ -40,6 +40,9 @@ class ChatMessage(models.Model):
     content = models.TextField()
     model = models.CharField(max_length=100, blank=True)          # Ollama tag that answered
     routing_reason = models.CharField(max_length=40, blank=True)  # coding | vision | ...
+    # Model-only context stored with a user turn (e.g. OCR text of its images);
+    # sent to models with the history, not shown in the UI.
+    extra_context = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

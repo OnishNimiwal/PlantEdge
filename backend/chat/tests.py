@@ -725,3 +725,67 @@ class ConversationContextTests(APITestCase):
         self.assertIn("Dry run", out.getvalue())
         call_command("cleanup_dev_data", "--conversations", "--all", "--yes", stdout=io.StringIO())
         self.assertEqual(Conversation.objects.count(), 0)
+
+
+class OCRVisionIntegrationTests(APITestCase):
+    """Phase E: when chat images use OCR, the vision model, or both (L25)."""
+
+    OCR = {"text": "Finding 1: shell corrosion\nRecommendation: UT mapping in 30 days",
+           "lines": 2, "confidence": 0.97, "complex_layout": False}
+
+    def post(self, body):
+        return self.client.post(reverse("chat"), body, format="json")
+
+    @patch("documents.ocr.ocr_image")
+    @patch("chat.model_manager.requests.Session.post")
+    def test_document_text_task_uses_ocr_then_qwen3(self, mock_post, mock_ocr):
+        mock_ocr.return_value = self.OCR
+        mock_post.return_value = ollama_ok("Key finding: shell corrosion.")
+        response = self.post({"message": "Summarize this inspection report and list the key findings.",
+                              "images": [PNG_B64]})
+        self.assertEqual(response.data["routing"]["reason"], "ocr_text")
+        self.assertEqual(response.data["ollama_model"], "qwen3:8b")
+        self.assertEqual(response.data["ocr"][0]["confidence"], 0.97)
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertNotIn("images", msgs[-1])
+        self.assertIn("shell corrosion", msgs[-1]["content"])
+        mock_ocr.assert_called_once()
+        # Follow-up: the OCR text travels with the history, the UI never shows it.
+        mock_post.return_value = ollama_ok("UT mapping within 30 days.")
+        self.post({"message": "What is the recommended action?", "conversation_id": response.data["conversation_id"]})
+        history = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertIn("UT mapping in 30 days", history[0]["content"])
+        shown = self.client.get(reverse("conversation-detail", kwargs={"pk": response.data["conversation_id"]}))
+        self.assertNotIn("OCR TEXT", shown.data["conversation"]["messages"][0]["content"])
+
+    @patch("documents.ocr.ocr_image")
+    @patch("chat.model_manager.requests.Session.post")
+    def test_visual_task_skips_ocr(self, mock_post, mock_ocr):
+        mock_post.return_value = ollama_ok("A red pump.")
+        response = self.post({"message": "Describe this image.", "images": [PNG_B64]})
+        self.assertEqual(response.data["routing"]["reason"], "vision")
+        mock_ocr.assert_not_called()
+        self.assertIsNone(response.data["ocr"])
+
+    @patch("documents.ocr.ocr_image")
+    @patch("chat.model_manager.requests.Session.post")
+    def test_text_and_visual_task_sends_image_and_ocr_to_vl(self, mock_post, mock_ocr):
+        mock_ocr.return_value = self.OCR
+        mock_post.return_value = ollama_ok("...")
+        response = self.post({"message": "Summarize the report and describe the diagram on it.",
+                              "images": [PNG_B64]})
+        self.assertEqual(response.data["routing"]["reason"], "vision_ocr")
+        self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
+        last = mock_post.call_args.kwargs["json"]["messages"][-1]
+        self.assertEqual(last["images"], [PNG_B64])
+        self.assertIn("OCR TEXT OF ATTACHED IMAGE 1", last["content"])
+
+    @patch("documents.ocr.ocr_image", side_effect=Exception("boom"))
+    @patch("chat.model_manager.requests.Session.post")
+    def test_ocr_failure_is_clean(self, mock_post, mock_ocr):
+        from documents.ocr import OCRError
+        mock_ocr.side_effect = OCRError("engine unavailable")
+        response = self.post({"message": "Transcribe the text in this image.", "images": [PNG_B64]})
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn("Local OCR failed", response.data["error"])
+        mock_post.assert_not_called()

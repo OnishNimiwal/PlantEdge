@@ -15,8 +15,9 @@ from .model_manager import (
     NonLocalEndpointError,
     ModelResourceError,
 )
-from .router import route_model
+from .router import route_model, REASON_OCR_TEXT
 from . import context as ctx
+from documents import processing
 from .models import Conversation
 
 logger = logging.getLogger(__name__)
@@ -82,9 +83,25 @@ class ChatAPIView(APIView):
                 "external_api": False,
             })
 
+        # 1b. Document processing: local OCR when the router asks for it (image of a document).
+        ocr_info, extra_context = None, ""
+        images_for_model = data.get("images")
+        if selection.get("ocr") and data.get("images"):
+            try:
+                ocr_out = processing.ocr_images(data["images"])
+            except processing.OCRError as exc:
+                return Response({
+                    "success": False, "error": f"Local OCR failed: {exc}",
+                    "model": model_id, "routing": routing,
+                }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            extra_context, ocr_info = ocr_out["text"], ocr_out["results"]
+            if selection["reason"] == REASON_OCR_TEXT:
+                images_for_model = None  # the text model reasons over the OCR text only
+
         try:
             messages, context_info = ctx.build_messages(
-                conv, data["message"], selection["model"], new_images=data.get("images")
+                conv, data["message"], selection["model"], new_images=images_for_model,
+                extra_context=extra_context,
             )
             # 2. Execution: the execution layer decides HOW to call it (local Ollama only).
             result = generate_response(selection["model"], messages=messages)
@@ -114,6 +131,7 @@ class ChatAPIView(APIView):
         ctx.record_turn(
             conv, data["message"], result["response"], model_tag=result["ollama_model"],
             reason=selection["reason"], images=data.get("images"), image_info=image_info,
+            extra_context=extra_context,
         )
         return Response({
             "success": True,
@@ -123,6 +141,7 @@ class ChatAPIView(APIView):
             "ollama_model": result["ollama_model"],
             "routing": routing,
             "context": context_info,
+            "ocr": ocr_info,
             "duration_ms": result["duration_ms"],
             "images": image_info,
             "context_overflow": result["context_overflow"],

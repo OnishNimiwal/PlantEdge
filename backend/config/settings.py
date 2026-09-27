@@ -154,10 +154,17 @@ OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
 _think = os.getenv('OLLAMA_THINK', '').strip().lower()
 OLLAMA_THINK = {'true': True, '1': True, 'yes': True, 'false': False, '0': False, 'no': False}.get(_think)
 
+# Conversation context (chat/context.py): earlier messages sent with each request, and how
+# many recent messages an earlier image stays available for follow-up questions.
+CONTEXT_MAX_MESSAGES = int(os.getenv('CONTEXT_MAX_MESSAGES', '12'))
+CONTEXT_IMAGE_TURNS = int(os.getenv('CONTEXT_IMAGE_TURNS', '8'))
+
 # Images sent to the vision model (backend-enforced; protects the 8 GB GPU)
 VISION_MAX_SIDE = int(os.getenv('VISION_MAX_SIDE', '1024'))            # longest side after resize
 VISION_MAX_INPUT_PIXELS = int(os.getenv('VISION_MAX_INPUT_PIXELS', str(50_000_000)))  # reject above
 MAX_IMAGES_PER_MESSAGE = int(os.getenv('MAX_IMAGES_PER_MESSAGE', '3'))
+# PDF pages the vision model may see per question ("pages 2-3"); pages are never all sent at once.
+VISION_MAX_PDF_PAGES = int(os.getenv('VISION_MAX_PDF_PAGES', '2'))
 
 # Document limits (resource protection; reported to the user when hit)
 DOCUMENT_MAX_CHARS = int(os.getenv('DOCUMENT_MAX_CHARS', '50000'))

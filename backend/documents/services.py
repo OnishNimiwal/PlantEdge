@@ -10,12 +10,9 @@ Questions that need visual understanding are sent to the vision model together
 with the document image (page 1 for PDFs) instead of the OCR text.
 """
 
-import base64
 import logging
 
-import pymupdf
 
-from django.conf import settings
 
 from chat.model_manager import (
     generate_response, ModelManagerError, prompt_budget_tokens, CHARS_PER_TOKEN,
@@ -23,6 +20,7 @@ from chat.model_manager import (
 from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISION
 from chat.model_registry import get_model
 from chat import context as chat_context
+from . import processing
 
 logger = logging.getLogger(__name__)
 
@@ -60,27 +58,6 @@ def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
     return text, info
 
 
-def document_image_b64(document):
-    """
-    Render the document (image file, or page 1 of a PDF) as a PNG no larger than
-    VISION_MAX_SIDE, base64-encoded. Returns None for documents without visuals.
-    """
-    if document.file_type not in ("PDF", "PNG", "JPG") or not document.file:
-        return None
-    document.file.open("rb")
-    try:
-        data = document.file.read()
-    finally:
-        document.file.close()
-    filetype = {"PDF": "pdf", "PNG": "png", "JPG": "jpeg"}[document.file_type]
-    with pymupdf.open(stream=data, filetype=filetype) as doc:
-        page = doc[0]
-        # Large images exhaust the 8 GB GPU in the vision model, so render at most this size.
-        zoom = min(settings.VISION_MAX_SIDE / max(page.rect.width, page.rect.height), 3.0)
-        pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
-        return base64.b64encode(pix.tobytes("png")).decode()
-
-
 def _run(model: str, prompt: str, images=None) -> dict:
     try:
         return generate_response(model, prompt, images=images)
@@ -99,24 +76,34 @@ def ask_document_question(document, question: str, conversation_id=None) -> dict
     signals = chat_context.signals(conv)
     decision = route_model(question, context={**signals, "image_available": has_visual})
     images = None
+    vision_pages = []
     context_info = {"document_chars": len(document.extracted_text), "context_chars_used": 0,
                     "context_truncated": False}
     if decision["requires_image"]:
         # e.g. "describe this image" on a TXT document: no visual, use the text.
         decision = route_model("")
     elif decision["reason"] == REASON_VISION:
-        image = document_image_b64(document)
-        images = [image] if image else None
+        page_count = document.page_count or 1
+        vision_pages = processing.requested_pages(question, page_count) if document.file_type == "PDF" else [1]
+        images = processing.document_images_b64(document, vision_pages) or None
         if images is None:
             # Nothing visual to look at -> answer from the text instead.
             decision = route_model("")
+            vision_pages = []
 
     if images:
+        where = (
+            f"page{'s' if len(vision_pages) > 1 else ''} {', '.join(map(str, vision_pages))} of "
+            f"{document.page_count or 1} of the PDF" if document.file_type == "PDF" else "the image"
+        )
+        # Text + visual: give the vision model the extracted text too (helps read labels).
+        excerpt = document.extracted_text[:3000]
         system = (
-            f"You are an on-premise local AI assistant. The attached image is the document "
-            f"'{document.original_name}'"
-            f"{' (page 1)' if document.file_type == 'PDF' else ''}. "
-            "Answer the user's questions based on what you can see in the image."
+            f"You are an on-premise local AI assistant. The attached image(s) show {where} "
+            f"'{document.original_name}'. Answer the user's questions based on what you can see; "
+            "only the attached pages are visible to you.\n"
+            "Text extracted from the document (may help read labels; may contain OCR errors):\n"
+            f"{excerpt}"
         )
     else:
         # Leave a quarter of the budget for conversation history.
@@ -157,6 +144,8 @@ def ask_document_question(document, question: str, conversation_id=None) -> dict
         "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
         "context": {**context_info, **history_info},
         "conversation_id": str(conv.id),
+        "vision_pages": vision_pages,
+        "page_count": document.page_count,
     }
 
 
