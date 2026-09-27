@@ -40,6 +40,19 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
     );
   }
 
+  const maxChars = document.limits?.max_chars || 50000;
+  const limitWarnings = [];
+  if (document.truncated) {
+    limitWarnings.push(
+      `Only the first ${maxChars.toLocaleString()} of ${(document.original_chars || 0).toLocaleString()} extracted characters were kept (DOCUMENT_MAX_CHARS).`
+    );
+  }
+  if (document.ocr_pages_skipped > 0) {
+    limitWarnings.push(
+      `${document.ocr_pages_skipped} scanned page(s) were not OCR'd: the limit is ${document.limits?.max_ocr_pages} OCR pages per PDF (OCR_MAX_PDF_PAGES).`
+    );
+  }
+
   const handleGenerateSummary = async () => {
     setActiveTab('summary');
     setSummaryLoading(true);
@@ -49,7 +62,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
       const res = await summarizeDocument(document.id);
       if (res && res.success && res.summary) {
         setSummary(res.summary);
-        setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason });
+        setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason, context: res.context });
       } else {
         setSummaryError(res?.error || "Failed to generate summary from local AI.");
       }
@@ -108,7 +121,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
             </span>
             <span className="meta-badge">
               <Layers size={13} />
-              {(document.extracted_text || "").length.toLocaleString()} / 50,000 chars
+              {(document.extracted_text || "").length.toLocaleString()} / {maxChars.toLocaleString()} chars
             </span>
             {document.ocr_pages > 0 && (
               <span className="meta-badge ocr" title="Text extracted locally with PaddleOCR">
@@ -117,9 +130,9 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
                 {document.ocr_confidence != null && ` · ${Math.round(document.ocr_confidence * 100)}% confidence`}
               </span>
             )}
-            {(document.extracted_text || "").length >= 50000 && (
-              <span className="meta-badge warning" title="Text was capped at 50,000 characters">
-                <AlertTriangle size={12} /> Capped at 50k
+            {document.truncated && (
+              <span className="meta-badge warning" title={`Text was capped at ${maxChars.toLocaleString()} characters`}>
+                <AlertTriangle size={12} /> Capped at {maxChars.toLocaleString()} chars
               </span>
             )}
           </div>
@@ -160,6 +173,13 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
           </button>
         </div>
       </div>
+
+      {limitWarnings.length > 0 && (
+        <div className="doc-limit-banner">
+          <AlertTriangle size={14} />
+          <div>{limitWarnings.map((w, i) => <div key={i}>{w}</div>)}</div>
+        </div>
+      )}
 
       {downloadError && (
         <div className="download-error-bar">
@@ -242,6 +262,12 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
                     <span>{copiedSummary ? 'Copied' : 'Copy'}</span>
                   </button>
                 </div>
+                {summaryMeta?.context?.context_truncated && (
+                  <span className="context-note">
+                    The model read the first {summaryMeta.context.context_chars_used.toLocaleString()} of{' '}
+                    {summaryMeta.context.document_chars.toLocaleString()} characters (model context window limit).
+                  </span>
+                )}
                 <div className="summary-content">
                   {summary.split('\n').map((line, idx) => (
                     <React.Fragment key={idx}>

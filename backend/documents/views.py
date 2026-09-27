@@ -79,6 +79,10 @@ class DocumentUploadView(APIView):
             extraction_method=extraction["method"],
             ocr_pages=extraction["ocr_pages"],
             ocr_confidence=extraction["ocr_confidence"],
+            page_count=extraction["page_count"],
+            ocr_pages_skipped=extraction["ocr_pages_skipped"],
+            truncated=extraction["truncated"],
+            original_chars=extraction["original_chars"],
         )
 
         return Response(

@@ -12,7 +12,17 @@ from .model_registry import MODEL_REGISTRY, get_model, UnknownModelError
 from .model_manager import ModelManager, ModelRequestError
 from .router import route_model
 
-PNG_B64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
+import io as _io
+from PIL import Image as _Image
+
+
+def make_image_b64(width=64, height=32, fmt="PNG"):
+    buf = _io.BytesIO()
+    _Image.new("RGB", (width, height), (200, 30, 30)).save(buf, fmt)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+PNG_B64 = make_image_b64()
 
 
 def ollama_ok(text="ok"):
@@ -27,7 +37,7 @@ class ChatAPITests(APITestCase):
     def setUp(self):
         self.chat_url = reverse("chat")
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_valid_message_success(self, mock_post):
         """Backward compatibility: no model given -> default model is used."""
         mock_post.return_value = ollama_ok("Hello! I am your local AI assistant running on PC5.")
@@ -52,7 +62,7 @@ class ChatAPITests(APITestCase):
         self.assertFalse(kwargs["json"]["stream"])
         self.assertNotIn("images", kwargs["json"])
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_each_registered_model_routes_to_its_ollama_tag(self, mock_post):
         mock_post.return_value = ollama_ok()
         for model_id, model in MODEL_REGISTRY.items():
@@ -64,7 +74,7 @@ class ChatAPITests(APITestCase):
                 self.assertEqual(response.data["model"], model_id)
                 self.assertEqual(mock_post.call_args.kwargs["json"]["model"], model.ollama_name)
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_omitted_model_uses_auto_routing(self, mock_post):
         mock_post.return_value = ollama_ok()
         response = self.client.post(
@@ -75,7 +85,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.data["routing"], {"mode": "auto", "reason": "coding"})
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "qwen2.5-coder:7b")
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_manual_model_overrides_router(self, mock_post):
         mock_post.return_value = ollama_ok()
         response = self.client.post(
@@ -86,7 +96,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.data["model"], "qwen3")
         self.assertEqual(response.data["routing"], {"mode": "manual", "reason": "manual"})
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_auto_with_image_routes_to_vision(self, mock_post):
         mock_post.return_value = ollama_ok()
         response = self.client.post(
@@ -99,17 +109,17 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.data["routing"]["reason"], "vision")
         self.assertEqual(mock_post.call_args.kwargs["json"]["images"], [PNG_B64])
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_routing_returned_on_error(self, mock_post):
         mock_post.side_effect = requests.exceptions.ConnectionError()
         response = self.client.post(
-            self.chat_url, {"message": "Analyze this P&ID."}, format="json"
+            self.chat_url, {"message": "Analyze this P&ID.", "images": [PNG_B64]}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertEqual(response.data["model"], "qwen-vl")
         self.assertEqual(response.data["routing"]["reason"], "vision")
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_invalid_model_name(self, mock_post):
         response = self.client.post(
             self.chat_url, {"message": "hi", "model": "gpt-4"}, format="json"
@@ -130,7 +140,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("message", response.data)
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ollama_server_connection_error(self, mock_post):
         """Test that connection failure to Ollama returns HTTP 503."""
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
@@ -142,7 +152,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.data.get("error"), "Local AI server is unavailable.")
         self.assertNotIn("Connection refused", str(response.data))
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ollama_server_timeout(self, mock_post):
         """Test that timeout when contacting Ollama returns HTTP 504."""
         mock_post.side_effect = requests.exceptions.Timeout("Request timed out")
@@ -153,11 +163,12 @@ class ChatAPITests(APITestCase):
         self.assertFalse(response.data.get("success"))
         self.assertIn("timed out", response.data.get("error"))
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ollama_server_http_error(self, mock_post):
         """Test that HTTP error (e.g. 500) from Ollama returns a clean 502."""
         mock_response = Mock()
         mock_response.status_code = 500
+        mock_response.text = "internal error"
         mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("500 Server Error")
         mock_post.return_value = mock_response
 
@@ -170,7 +181,7 @@ class ChatAPITests(APITestCase):
         )
         self.assertNotIn("500 Server Error", str(response.data))
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_model_not_installed_in_ollama(self, mock_post):
         mock_response = Mock()
         mock_response.status_code = 404
@@ -182,7 +193,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertIn("not installed", response.data["error"])
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_image_sent_to_vision_model(self, mock_post):
         mock_post.return_value = ollama_ok("A diagram.")
         response = self.client.post(
@@ -195,7 +206,7 @@ class ChatAPITests(APITestCase):
         self.assertEqual(payload["model"], "qwen2.5vl:7b")
         self.assertEqual(payload["images"], [PNG_B64])  # data: prefix stripped
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_image_rejected_for_text_model(self, mock_post):
         response = self.client.post(
             self.chat_url,
@@ -216,7 +227,7 @@ class ChatAPITests(APITestCase):
                 )
                 self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ask_ollama_service_direct(self, mock_post):
         """Direct unit test for the backward-compatible ask_ollama helper."""
         mock_post.return_value = ollama_ok("Direct service output")
@@ -242,14 +253,14 @@ class ModelManagerTests(APITestCase):
         with self.assertRaises(UnknownModelError):
             get_model("does-not-exist")
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_images_refused_for_text_model(self, mock_post):
         with self.assertRaises(ModelRequestError):
             ModelManager().generate("qwen-coder", "hi", images=[PNG_B64])
         mock_post.assert_not_called()
 
     @override_settings(OLLAMA_URL="http://127.0.0.1:11434", OLLAMA_TIMEOUT=42)
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_uses_local_ollama_and_timeout(self, mock_post):
         mock_post.return_value = ollama_ok()
         ModelManager().generate("qwen3", "hi")
@@ -329,7 +340,7 @@ class ExecutionLayerTests(APITestCase):
         ("Analyze this engineering drawing.", "qwen2.5vl:7b", "vision"),
     ]
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_router_output_feeds_execution_layer(self, mock_post):
         from .model_manager import generate_response
         mock_post.return_value = ollama_ok("done")
@@ -341,12 +352,15 @@ class ExecutionLayerTests(APITestCase):
                 self.assertEqual(result["ollama_model"], tag)
                 self.assertEqual(mock_post.call_args.kwargs["json"]["model"], tag)
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_chat_api_uses_router_then_execution(self, mock_post):
         mock_post.return_value = ollama_ok("done")
         for message, tag, reason in self.CASES:
             with self.subTest(message=message):
-                response = self.client.post(reverse("chat"), {"message": message}, format="json")
+                body = {"message": message}
+                if reason == "vision":
+                    body["images"] = [PNG_B64]
+                response = self.client.post(reverse("chat"), body, format="json")
                 self.assertEqual(response.status_code, status.HTTP_200_OK)
                 self.assertEqual(response.data["ollama_model"], tag)
                 self.assertEqual(response.data["routing"], {"mode": "auto", "reason": reason})
@@ -360,7 +374,7 @@ class ExecutionLayerTests(APITestCase):
         self.assertNotIn("/api/generate", source)
 
     @override_settings(OLLAMA_URL="http://8.8.8.8:11434")
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_public_ollama_url_is_refused(self, mock_post):
         from .model_manager import generate_response, NonLocalEndpointError
         with self.assertRaises(NonLocalEndpointError):
@@ -370,16 +384,142 @@ class ExecutionLayerTests(APITestCase):
         self.assertEqual(response.data["error"], "Local AI server is misconfigured.")
         mock_post.assert_not_called()
 
-    @patch("chat.model_manager.requests.post")
-    def test_localhost_and_lan_urls_allowed(self, mock_post):
+    @override_settings(OLLAMA_ALLOWED_HOSTS=["192.168.1.50", "10.20.0.0/16"])
+    @patch("chat.model_manager.requests.Session.post")
+    def test_localhost_and_allowlisted_lan_urls_allowed(self, mock_post):
         from .model_manager import ModelManager
         mock_post.return_value = ollama_ok()
-        for url in ("http://localhost:11434", "http://127.0.0.1:11434", "http://192.168.1.50:11434"):
+        for url in ("http://localhost:11434", "http://127.0.0.1:11434",
+                    "http://192.168.1.50:11434", "http://10.20.3.4:11434"):
             with self.subTest(url=url):
                 ModelManager(base_url=url).generate("qwen3", "hi")
                 self.assertTrue(mock_post.call_args.args[0].startswith(url))
+                self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+
+    @override_settings(OLLAMA_ALLOWED_HOSTS=["192.168.1.50", "8.8.8.8"])
+    @patch("chat.model_manager.requests.Session.post")
+    def test_unlisted_lan_public_and_link_local_refused(self, mock_post):
+        from .model_manager import ModelManager, NonLocalEndpointError
+        for url in ("http://192.168.1.99:11434",          # private but not allow-listed
+                    "http://8.8.8.8:11434",               # public, even though listed
+                    "http://169.254.169.254:11434",       # link-local / cloud metadata
+                    "http://0.0.0.0:11434"):
+            with self.subTest(url=url):
+                with self.assertRaises(NonLocalEndpointError):
+                    ModelManager(base_url=url).generate("qwen3", "hi")
+        mock_post.assert_not_called()
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_redirect_from_ollama_is_refused(self, mock_post):
+        from .model_manager import generate_response, NonLocalEndpointError
+        redirect = Mock(status_code=302, text="")
+        mock_post.return_value = redirect
+        with self.assertRaises(NonLocalEndpointError):
+            generate_response("qwen3", "hi")
+
+    def test_proxy_environment_is_ignored(self):
+        from .model_manager import _session
+        self.assertFalse(_session().trust_env)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_gpu_oom_returns_clean_error(self, mock_post):
+        mock_post.return_value = Mock(status_code=500, text='{"error":"CUDA error: out of memory"}')
+        response = self.client.post(
+            reverse("chat"), {"message": "Describe this image.", "images": [PNG_B64]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertIn("ran out of memory", response.data["error"])
+        self.assertNotIn("CUDA", response.data["error"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_num_ctx_and_think_options(self, mock_post):
+        from .model_manager import generate_response
+        mock_post.return_value = ollama_ok()
+        generate_response("qwen3", "hi")
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["options"]["num_ctx"], 8192)
+        self.assertNotIn("think", payload)  # default: model decides
+        with override_settings(OLLAMA_THINK=False):
+            generate_response("qwen3", "hi")
+            self.assertIs(mock_post.call_args.kwargs["json"]["think"], False)
+            generate_response("qwen-coder", "hi")  # not a thinking model
+            self.assertNotIn("think", mock_post.call_args.kwargs["json"])
+        with override_settings(OLLAMA_NUM_CTX=4096):
+            generate_response("qwen3", "hi")
+            self.assertEqual(mock_post.call_args.kwargs["json"]["options"]["num_ctx"], 4096)
 
     def test_unknown_model_tag_rejected(self):
         from .model_manager import generate_response
         with self.assertRaises(UnknownModelError):
             generate_response("gpt-4o", "hi")
+
+
+class ImageSafetyTests(APITestCase):
+    """Phase A: backend-enforced image limits (L1, L2) and vision-without-image (L9)."""
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_large_image_is_downscaled_before_inference(self, mock_post):
+        mock_post.return_value = ollama_ok("big")
+        response = self.client.post(
+            reverse("chat"),
+            {"message": "Describe this image.", "images": [make_image_b64(3840, 2160, "JPEG")]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        sent = _Image.open(_io.BytesIO(base64.b64decode(mock_post.call_args.kwargs["json"]["images"][0])))
+        self.assertEqual(sent.size, (1024, 576))  # aspect ratio preserved
+        self.assertEqual(sent.format, "JPEG")
+        info = response.data["images"][0]
+        self.assertTrue(info["resized"])
+        self.assertEqual((info["original_width"], info["original_height"]), (3840, 2160))
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_small_image_passed_through_unchanged(self, mock_post):
+        mock_post.return_value = ollama_ok()
+        original = make_image_b64(800, 600)
+        self.client.post(reverse("chat"), {"message": "Describe this image.", "images": [original]}, format="json")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["images"], [original])
+
+    @override_settings(VISION_MAX_INPUT_PIXELS=1_000_000)
+    def test_oversized_image_rejected_cleanly(self):
+        response = self.client.post(
+            reverse("chat"),
+            {"message": "Describe this image.", "images": [make_image_b64(2000, 1000)]}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("too large", str(response.data["images"]))
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_multiple_images_up_to_limit(self, mock_post):
+        mock_post.return_value = ollama_ok()
+        response = self.client.post(
+            reverse("chat"),
+            {"message": "Compare these images.", "images": [PNG_B64] * 3}, format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mock_post.call_args.kwargs["json"]["images"]), 3)
+        too_many = self.client.post(
+            reverse("chat"),
+            {"message": "Compare these images.", "images": [PNG_B64] * 4}, format="json",
+        )
+        self.assertEqual(too_many.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_vision_request_without_image_asks_for_one(self, mock_post):
+        response = self.client.post(
+            reverse("chat"), {"message": "Analyze this engineering drawing."}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["needs_image"])
+        self.assertIsNone(response.data["model"])
+        self.assertIn("attach", response.data["response"])
+        mock_post.assert_not_called()
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_manual_vl_without_image_still_runs(self, mock_post):
+        mock_post.return_value = ollama_ok("text answer")
+        response = self.client.post(
+            reverse("chat"), {"message": "Analyze this drawing.", "model": "qwen-vl"}, format="json"
+        )
+        self.assertEqual(response.data["model"], "qwen-vl")
+        mock_post.assert_called_once()

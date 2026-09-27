@@ -29,6 +29,7 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
           time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           model: res.ollama_model,
           routing: res.routing?.reason,
+          context: res.context,
         };
         setConversation((prev) => [...prev, botItem]);
       } else {
@@ -75,6 +76,12 @@ export default function DocumentQuestionBox({ documentId, documentName }) {
                   )}
                   <div className={`qa-bubble ${isUser ? 'user' : 'bot'}`}>
                     <p>{msg.text}</p>
+                    {msg.context?.context_truncated && (
+                      <span className="context-note">
+                        Answer based on the first {msg.context.context_chars_used.toLocaleString()} of{' '}
+                        {msg.context.document_chars.toLocaleString()} characters (model context window limit).
+                      </span>
+                    )}
                     {!isUser && (
                       <button
                         className="qa-copy-btn"

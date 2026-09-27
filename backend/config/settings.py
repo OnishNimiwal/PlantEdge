@@ -133,15 +133,35 @@ if cors_origins_env:
     CORS_ALLOWED_ORIGINS = [origin.strip() for origin in cors_origins_env.split(',') if origin.strip()]
 
 # Ollama and AI Configuration (Strict On-Premise Privacy)
+# Models are defined in chat/model_registry.py (OLLAMA_MODEL is no longer used).
+# There is no external/cloud AI support at all (ALLOW_EXTERNAL_AI was removed);
+# chat/checks.py warns if either legacy variable is still set.
 OLLAMA_URL = os.getenv('OLLAMA_URL', 'http://127.0.0.1:11434').rstrip('/')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen3:4b')
-ALLOW_EXTERNAL_AI = os.getenv('ALLOW_EXTERNAL_AI', 'False').lower() in ('true', '1', 'yes')
+# Private-LAN hosts/IPs/CIDRs Ollama may run on, e.g. "192.168.1.50" or "10.20.0.0/16".
+# Loopback is always allowed; public and link-local addresses are always refused.
+OLLAMA_ALLOWED_HOSTS = [h.strip() for h in os.getenv('OLLAMA_ALLOWED_HOSTS', '').split(',') if h.strip()]
 
 # Multi-model layer (registered local models live in chat/model_registry.py)
 DEFAULT_CHAT_MODEL = os.getenv('DEFAULT_CHAT_MODEL', 'qwen3')
 # Seconds. Generous because switching models on an 8 GB GPU means a reload,
 # and Qwen3 spends time "thinking" before it answers.
 OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '300'))
+# Context window per request. Ollama's default (4096) silently halves longer prompts.
+# 8192 keeps each model fully on an 8 GB GPU; 16384 spills qwen3 to CPU.
+OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
+# Qwen3 "thinking": empty = model default (on), "false" = answer directly (faster,
+# less step-by-step reasoning), "true" = force on. Only affects thinking-capable models.
+_think = os.getenv('OLLAMA_THINK', '').strip().lower()
+OLLAMA_THINK = {'true': True, '1': True, 'yes': True, 'false': False, '0': False, 'no': False}.get(_think)
+
+# Images sent to the vision model (backend-enforced; protects the 8 GB GPU)
+VISION_MAX_SIDE = int(os.getenv('VISION_MAX_SIDE', '1024'))            # longest side after resize
+VISION_MAX_INPUT_PIXELS = int(os.getenv('VISION_MAX_INPUT_PIXELS', str(50_000_000)))  # reject above
+MAX_IMAGES_PER_MESSAGE = int(os.getenv('MAX_IMAGES_PER_MESSAGE', '3'))
+
+# Document limits (resource protection; reported to the user when hit)
+DOCUMENT_MAX_CHARS = int(os.getenv('DOCUMENT_MAX_CHARS', '50000'))
+DOCUMENT_MAX_PDF_PAGES = int(os.getenv('DOCUMENT_MAX_PDF_PAGES', '300'))
 
 # Local OCR (PaddleOCR on CPU; see documents/ocr.py)
 OCR_LANG = os.getenv('OCR_LANG', 'en')

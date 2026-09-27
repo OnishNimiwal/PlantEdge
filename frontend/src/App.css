@@ -1480,3 +1480,42 @@
   gap: 0.35rem;
   margin-bottom: 0.3rem;
 }
+
+/* ===== Stability phase: multiple images, notices, document limits ===== */
+.attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.message-notice-tag {
+  background-color: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  border-color: var(--badge-amber-border);
+}
+
+.doc-limit-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 1.25rem 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--badge-amber-border);
+  border-radius: var(--radius-md);
+  background-color: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  font-size: 0.8rem;
+}
+
+.context-note {
+  display: block;
+  margin-top: 0.3rem;
+  font-size: 0.72rem;
+  color: var(--badge-amber-text);
+}

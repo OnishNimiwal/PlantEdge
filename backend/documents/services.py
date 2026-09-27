@@ -15,14 +15,15 @@ import logging
 
 import pymupdf
 
-from chat.model_manager import generate_response, ModelManagerError
+from django.conf import settings
+
+from chat.model_manager import (
+    generate_response, ModelManagerError, prompt_budget_tokens, CHARS_PER_TOKEN,
+)
 from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISION
 from chat.model_registry import get_model
 
 logger = logging.getLogger(__name__)
-
-# Large images exhaust the 8 GB GPU in the vision model, so render at most this size.
-VISION_MAX_SIDE = 1024
 
 
 class OllamaServiceError(Exception):
@@ -37,6 +38,25 @@ def _ocr_note(document) -> str:
             "image and may contain recognition errors.\n"
         )
     return ""
+
+
+def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
+    """
+    Trim document text so the whole prompt fits the model's context window.
+    (Ollama silently halves prompts that overflow num_ctx, dropping the instructions.)
+    Returns (text, info) where info reports how much of the document the model saw.
+    """
+    budget = int(prompt_budget_tokens(get_model(model_tag)) * CHARS_PER_TOKEN) - reserved_chars
+    budget = max(budget, 1000)
+    info = {"document_chars": len(text), "context_chars_used": min(len(text), budget),
+            "context_truncated": len(text) > budget}
+    if info["context_truncated"]:
+        text = (
+            text[:budget]
+            + f"\n[... document continues: only the first {budget:,} of {len(text):,} characters "
+            "fit in the model context window ...]"
+        )
+    return text, info
 
 
 def document_image_b64(document):
@@ -54,7 +74,8 @@ def document_image_b64(document):
     filetype = {"PDF": "pdf", "PNG": "png", "JPG": "jpeg"}[document.file_type]
     with pymupdf.open(stream=data, filetype=filetype) as doc:
         page = doc[0]
-        zoom = min(VISION_MAX_SIDE / max(page.rect.width, page.rect.height), 3.0)
+        # Large images exhaust the 8 GB GPU in the vision model, so render at most this size.
+        zoom = min(settings.VISION_MAX_SIDE / max(page.rect.width, page.rect.height), 3.0)
         pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
         return base64.b64encode(pix.tobytes("png")).decode()
 
@@ -73,6 +94,8 @@ def ask_document_question(document, question: str) -> dict:
     """
     decision = route_model(question)
     images = None
+    context_info = {"document_chars": len(document.extracted_text), "context_chars_used": 0,
+                    "context_truncated": False}
     if decision["reason"] == REASON_VISION:
         image = document_image_b64(document)
         images = [image] if image else None
@@ -89,13 +112,16 @@ def ask_document_question(document, question: str) -> dict:
             f"USER QUESTION: {question}\n\nANSWER:"
         )
     else:
+        doc_text, context_info = fit_to_context(
+            document.extracted_text, decision["model"], reserved_chars=1500 + len(question)
+        )
         prompt = (
             f"You are an on-premise local AI assistant analyzing the document '{document.original_name}'.\n"
             "Answer the user's question thoroughly and accurately based on the provided document content.\n"
             "If the answer cannot be determined from the document, clearly mention that.\n"
             f"{_ocr_note(document)}\n"
             "=== DOCUMENT CONTENT ===\n"
-            f"{document.extracted_text}\n"
+            f"{doc_text}\n"
             "=== END DOCUMENT CONTENT ===\n\n"
             f"USER QUESTION: {question}\n\n"
             "ANSWER:"
@@ -111,6 +137,7 @@ def ask_document_question(document, question: str) -> dict:
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "routing": {"mode": "auto", "reason": decision["reason"]},
+        "context": context_info,
     }
 
 
@@ -120,6 +147,7 @@ def summarize_document(document) -> dict:
     Returns {"summary", "model", "ollama_model", "routing"}.
     """
     model = get_model(ROUTE_TARGETS[REASON_GENERAL])
+    doc_text, context_info = fit_to_context(document.extracted_text, model.id, reserved_chars=1500)
     prompt = (
         f"You are an on-premise local AI assistant analyzing the document '{document.original_name}'.\n"
         "Generate a structured, professional summary of this document.\n"
@@ -129,7 +157,7 @@ def summarize_document(document) -> dict:
         "3. Important Details & Conclusions\n"
         f"{_ocr_note(document)}\n"
         "=== DOCUMENT CONTENT ===\n"
-        f"{document.extracted_text}\n"
+        f"{doc_text}\n"
         "=== END DOCUMENT CONTENT ===\n\n"
         "EXECUTIVE SUMMARY:"
     )
@@ -143,4 +171,5 @@ def summarize_document(document) -> dict:
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "routing": {"mode": "fixed", "reason": REASON_GENERAL},
+        "context": context_info,
     }

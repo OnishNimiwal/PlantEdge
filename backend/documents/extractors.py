@@ -4,6 +4,7 @@ from django.conf import settings
 
 from . import ocr
 
+# Default only; the enforced value is settings.DOCUMENT_MAX_CHARS.
 MAX_EXTRACTED_CHARS = 50000
 ALLOWED_EXTENSIONS = {
     '.pdf': 'PDF',
@@ -42,9 +43,16 @@ def _page_has_text(text: str) -> bool:
 def _extract_pdf(file_bytes: bytes) -> dict:
     """Text layer where present; local OCR for scanned (image-only) pages."""
     max_ocr_pages = getattr(settings, "OCR_MAX_PDF_PAGES", 20)
+    max_pages = getattr(settings, "DOCUMENT_MAX_PDF_PAGES", 300)
     with pymupdf.open(stream=file_bytes, filetype="pdf") as doc:
         if len(doc) == 0:
             raise DocumentExtractionError("The uploaded PDF has no pages.")
+        if len(doc) > max_pages:
+            raise DocumentExtractionError(
+                f"The PDF has {len(doc)} pages; the maximum is {max_pages}. "
+                "Split the document and upload the parts separately."
+            )
+        page_count = len(doc)
 
         pages = []  # (page_number, text, via_ocr)
         ocr_confidences = []
@@ -85,6 +93,8 @@ def _extract_pdf(file_bytes: bytes) -> dict:
         "method": method,
         "ocr_pages": ocr_pages,
         "ocr_confidence": round(sum(ocr_confidences) / ocr_pages, 3) if ocr_pages else None,
+        "page_count": page_count,
+        "ocr_pages_skipped": len(skipped_pages),
     }
 
 def _extract_image(file_bytes: bytes, file_type: str) -> dict:
@@ -99,6 +109,8 @@ def _extract_image(file_bytes: bytes, file_type: str) -> dict:
         "method": "ocr",
         "ocr_pages": 1,
         "ocr_confidence": result["confidence"],
+        "page_count": 1,
+        "ocr_pages_skipped": 0,
     }
 
 def extract_document(file_obj, file_type: str) -> dict:
@@ -109,7 +121,8 @@ def extract_document(file_obj, file_type: str) -> dict:
     Returns {"text", "method", "ocr_pages", "ocr_confidence"}.
     Enforces a strict 50,000 character limit.
     """
-    result = {"text": "", "method": "text", "ocr_pages": 0, "ocr_confidence": None}
+    result = {"text": "", "method": "text", "ocr_pages": 0, "ocr_confidence": None,
+              "page_count": 0, "ocr_pages_skipped": 0}
     file_obj.seek(0)
 
     if file_type == 'PDF':
@@ -162,11 +175,14 @@ def extract_document(file_obj, file_type: str) -> dict:
             "The scan may be blank, too low-resolution, or contain only graphics."
         )
 
-    # Enforce 50,000 character maximum limit
-    if len(text) > MAX_EXTRACTED_CHARS:
+    # Enforce the configured character limit (reported via result["truncated"])
+    max_chars = getattr(settings, "DOCUMENT_MAX_CHARS", MAX_EXTRACTED_CHARS)
+    result["original_chars"] = len(text)
+    result["truncated"] = len(text) > max_chars
+    if result["truncated"]:
         text = (
-            text[:MAX_EXTRACTED_CHARS]
-            + f"\n\n[Note: Document truncated at {MAX_EXTRACTED_CHARS:,} characters for on-premise memory protection]"
+            text[:max_chars]
+            + f"\n\n[Note: Document truncated at {max_chars:,} characters for on-premise memory protection]"
         )
     result["text"] = text
     return result

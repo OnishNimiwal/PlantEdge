@@ -13,8 +13,9 @@ from .model_manager import (
     ModelUnavailableError,
     ModelNotInstalledError,
     NonLocalEndpointError,
+    ModelResourceError,
 )
-from .router import route_model
+from .router import route_model, REASON_VISION
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,14 @@ ERROR_STATUS = {
     ModelUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ModelNotInstalledError: status.HTTP_503_SERVICE_UNAVAILABLE,
     NonLocalEndpointError: status.HTTP_503_SERVICE_UNAVAILABLE,
+    ModelResourceError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ModelTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
 }
+
+NEEDS_IMAGE_MESSAGE = (
+    "This looks like a request about an image, but no image is attached. "
+    "Please attach a PNG or JPEG image and ask again."
+)
 
 
 def select_model(data) -> dict:
@@ -48,6 +55,22 @@ class ChatAPIView(APIView):
         selection = select_model(data)
         model_id = selection["model_id"]
         routing = {"mode": selection["mode"], "reason": selection["reason"]}
+        image_info = getattr(serializer, "image_info", [])
+
+        # A visual question with nothing to look at: ask for the image instead of
+        # sending the request to the vision model, which could only guess.
+        if selection["mode"] == "auto" and selection["reason"] == REASON_VISION and not data.get("images"):
+            logger.info("Vision request without image: no model called")
+            return Response({
+                "success": True,
+                "needs_image": True,
+                "response": NEEDS_IMAGE_MESSAGE,
+                "model": None,
+                "ollama_model": None,
+                "routing": routing,
+                "external_api": False,
+            })
+
         try:
             # 2. Execution: the execution layer decides HOW to call it (local Ollama only).
             result = generate_response(
@@ -83,6 +106,8 @@ class ChatAPIView(APIView):
             "ollama_model": result["ollama_model"],
             "routing": routing,
             "duration_ms": result["duration_ms"],
+            "images": image_info,
+            "context_overflow": result["context_overflow"],
             "external_api": False,
         })
 
@@ -100,7 +125,12 @@ class RouteAPIView(APIView):
 
 class ModelListAPIView(APIView):
     def get(self, request):
+        from django.conf import settings
         return Response({
             "models": [m.to_dict() for m in list_models()],
             "default": get_default_model_id(),
+            "limits": {
+                "max_images_per_message": settings.MAX_IMAGES_PER_MESSAGE,
+                "vision_max_side": settings.VISION_MAX_SIDE,
+            },
         })

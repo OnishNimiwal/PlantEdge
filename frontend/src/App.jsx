@@ -15,10 +15,14 @@ export default function App() {
 
   // Local model registry. 'auto' = backend router picks; a model id = manual choice.
   const [models, setModels] = useState([]);
+  const [limits, setLimits] = useState(null);
   const [selectedModel, setSelectedModel] = useState('auto');
 
   useEffect(() => {
-    fetchModels().then((data) => setModels(data.models || []));
+    fetchModels().then((data) => {
+      setModels(data.models || []);
+      setLimits(data.limits || null);
+    });
   }, []);
 
   const modelName = (id) =>
@@ -38,7 +42,7 @@ export default function App() {
       sender: 'user',
       text: text,
       time: formatTime(),
-      image: images[0] || null,
+      images,
     };
 
     setMessages((prev) => [...prev, userMsg]);
@@ -53,8 +57,9 @@ export default function App() {
           sender: 'bot',
           text: result.response,
           time: formatTime(),
-          model: result.ollama_model || modelName(result.model) || 'local-ollama',
+          model: result.needs_image ? null : result.ollama_model || modelName(result.model) || 'local-ollama',
           routing: result.routing?.reason || null,
+          notice: result.needs_image ? 'No model was called' : null,
         };
         setMessages((prev) => [...prev, botMsg]);
       } else {
@@ -95,6 +100,7 @@ export default function App() {
               models={models}
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
+              limits={limits}
             />
           </div>
         ) : (

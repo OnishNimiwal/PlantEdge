@@ -30,12 +30,19 @@ export default function MessageBubble({ message }) {
           {!isUser && message.routing && (
             <span className="message-model-tag message-routing-tag">Routing: {message.routing}</span>
           )}
+          {!isUser && message.notice && (
+            <span className="message-model-tag message-notice-tag">{message.notice}</span>
+          )}
           <span className="message-time">{message.time || ''}</span>
         </div>
 
         <div className={`message-bubble ${isUser ? 'user-bubble' : 'bot-bubble'}`}>
-          {message.image && (
-            <img className="message-image" src={message.image} alt="Attached" />
+          {message.images?.length > 0 && (
+            <div className="message-images">
+              {message.images.map((src, idx) => (
+                <img key={idx} className="message-image" src={src} alt={`Attached ${idx + 1}`} />
+              ))}
+            </div>
           )}
           <div className="message-text">
             {message.text.split('\n').map((line, idx) => (

@@ -2,10 +2,9 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Loader2, ImagePlus, X } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
-// Large images exhaust the 8 GB GPU in the vision model, so downscale before upload.
-const MAX_IMAGE_SIDE = 1024;
-
-function resizeImage(file) {
+// Large images exhaust the 8 GB GPU in the vision model. The backend enforces the
+// limit too; resizing here just keeps uploads small.
+function resizeImage(file, maxSide) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Could not read image file.'));
@@ -13,7 +12,7 @@ function resizeImage(file) {
       const img = new Image();
       img.onerror = () => reject(new Error('Unsupported image file.'));
       img.onload = () => {
-        const scale = Math.min(1, MAX_IMAGE_SIDE / Math.max(img.width, img.height));
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * scale);
         canvas.height = Math.round(img.height * scale);
@@ -32,9 +31,12 @@ export default function MessageInput({
   models,
   selectedModel,
   onModelChange,
+  limits,
 }) {
+  const maxImages = limits?.max_images_per_message || 1;
+  const maxSide = limits?.vision_max_side || 1024;
   const [input, setInput] = useState('');
-  const [image, setImage] = useState(null); // data URL
+  const [images, setImages] = useState([]); // data URLs
   const [imageError, setImageError] = useState(null);
   const textareaRef = useRef(null);
   const fileRef = useRef(null);
@@ -53,7 +55,7 @@ export default function MessageInput({
   // Drop an attached image if the user switches to a text-only model.
   useEffect(() => {
     if (!supportsImages) {
-      setImage(null);
+      setImages([]);
       setImageError(null);
     }
   }, [supportsImages]);
@@ -63,9 +65,9 @@ export default function MessageInput({
     const trimmed = input.trim();
     if (!trimmed || disabled) return;
 
-    onSendMessage(trimmed, image ? [image] : []);
+    onSendMessage(trimmed, images);
     setInput('');
-    setImage(null);
+    setImages([]);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
@@ -88,16 +90,21 @@ export default function MessageInput({
   };
 
   const handleFileChange = async (e) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
+    if (!files.length) return;
     setImageError(null);
-    if (!['image/png', 'image/jpeg'].includes(file.type)) {
+    if (files.some((f) => !['image/png', 'image/jpeg'].includes(f.type))) {
       setImageError('Only PNG and JPEG images are supported.');
       return;
     }
+    const room = maxImages - images.length;
+    if (files.length > room) {
+      setImageError(`At most ${maxImages} image${maxImages > 1 ? 's' : ''} per message.`);
+    }
     try {
-      setImage(await resizeImage(file));
+      const resized = await Promise.all(files.slice(0, Math.max(room, 0)).map((f) => resizeImage(f, maxSide)));
+      setImages((prev) => [...prev, ...resized]);
     } catch (err) {
       setImageError(err.message);
     }
@@ -105,18 +112,22 @@ export default function MessageInput({
 
   return (
     <form className="input-form" onSubmit={handleSubmit}>
-      {image && (
-        <div className="attachment-preview">
-          <img src={image} alt="Attached" />
-          <button
-            type="button"
-            className="attachment-remove"
-            onClick={() => setImage(null)}
-            title="Remove image"
-            aria-label="Remove image"
-          >
-            <X size={12} />
-          </button>
+      {images.length > 0 && (
+        <div className="attachment-row">
+          {images.map((src, idx) => (
+            <div className="attachment-preview" key={idx}>
+              <img src={src} alt={`Attached ${idx + 1}`} />
+              <button
+                type="button"
+                className="attachment-remove"
+                onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
+                title="Remove image"
+                aria-label="Remove image"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          ))}
         </div>
       )}
       <div className="input-container">
@@ -126,8 +137,8 @@ export default function MessageInput({
               type="button"
               className="attach-button"
               onClick={() => fileRef.current?.click()}
-              disabled={disabled}
-              title="Attach an image (PNG/JPEG)"
+              disabled={disabled || images.length >= maxImages}
+              title={`Attach up to ${maxImages} images (PNG/JPEG)`}
               aria-label="Attach image"
             >
               <ImagePlus size={18} />
@@ -136,6 +147,7 @@ export default function MessageInput({
               ref={fileRef}
               type="file"
               accept="image/png,image/jpeg"
+              multiple={maxImages > 1}
               onChange={handleFileChange}
               hidden
             />

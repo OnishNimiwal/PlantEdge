@@ -18,6 +18,7 @@ class LocalModel:
     capability: str    # reasoning | coding | vision
     modality: str      # text | multimodal
     description: str = ""
+    supports_thinking: bool = False  # honours settings.OLLAMA_THINK (see model_manager)
 
     @property
     def supports_images(self) -> bool:
@@ -39,6 +40,7 @@ MODEL_REGISTRY = {
             capability="reasoning",
             modality="text",
             description="General reasoning, chat and structured text generation.",
+            supports_thinking=True,
         ),
         LocalModel(
             id="qwen-coder",

@@ -84,7 +84,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(extracted.startswith("A" * 50000))
         self.assertIn("truncated at 50,000 characters", extracted)
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ask_question_about_document(self, mock_post):
         """Test asking a question about an uploaded document."""
         mock_resp = Mock()
@@ -106,7 +106,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertEqual(response.data["answer"], "The document specifies on-premise inference on PC5.")
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_summarize_document(self, mock_post):
         """Test generating an AI summary of an uploaded document."""
         mock_resp = Mock()
@@ -128,7 +128,7 @@ class DocumentAPITests(APITestCase):
         self.assertTrue(response.data["success"])
         self.assertIn("Executive Overview", response.data["summary"])
 
-    @patch("chat.model_manager.requests.post")
+    @patch("chat.model_manager.requests.Session.post")
     def test_ollama_offline_returns_503(self, mock_post):
         """Test that Ollama connection error returns HTTP 503."""
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection refused")
@@ -191,7 +191,7 @@ class DocumentAPITests(APITestCase):
 
     def test_phase1_chat_still_works(self):
         """Regression test: Phase 1 /api/chat/ endpoint still works."""
-        with patch("chat.model_manager.requests.post") as mock_post:
+        with patch("chat.model_manager.requests.Session.post") as mock_post:
             mock_resp = Mock()
             mock_resp.status_code = 200
             mock_resp.json.return_value = {"response": "Phase 1 chat response"}
@@ -329,7 +329,7 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("even with local OCR", response.data["error"])
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("Key findings: corrosion."))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("Key findings: corrosion."))
     def test_ocr_text_question_routes_to_qwen3(self, mock_post):
         doc = Document.objects.create(
             original_name="scan.pdf", file_type="PDF", extraction_method="ocr",
@@ -347,7 +347,7 @@ class DocumentOCRTests(APITestCase):
         self.assertIn("produced by local OCR", payload["prompt"])
         self.assertNotIn("images", payload)
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("A pump symbol."))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A pump symbol."))
     def test_visual_question_sends_image_to_vision_model(self, mock_post):
         doc = Document.objects.create(
             original_name="drawing.png", file_type="PNG", extraction_method="ocr",
@@ -365,7 +365,7 @@ class DocumentOCRTests(APITestCase):
         sent = pymupdf.Pixmap(base64.b64decode(payload["images"][0]))
         self.assertLessEqual(max(sent.width, sent.height), 1024)  # downscaled for 8 GB VRAM
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("A title block."))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A title block."))
     def test_visual_question_on_scanned_pdf_sends_page_one(self, mock_post):
         doc = Document.objects.create(
             original_name="scan.pdf", file_type="PDF", extraction_method="ocr", extracted_text="x" * 30,
@@ -378,7 +378,7 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual(response.data["ollama_model"], "qwen2.5vl:7b")
         self.assertEqual(len(mock_post.call_args.kwargs["json"]["images"]), 1)
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("ok"))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
     def test_visual_question_on_txt_falls_back_to_text_model(self, mock_post):
         doc = Document.objects.create(original_name="n.txt", file_type="TXT", extracted_text="notes")
         response = self.client.post(
@@ -389,7 +389,7 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual(response.data["routing"]["reason"], "general_reasoning")
         self.assertNotIn("images", mock_post.call_args.kwargs["json"])
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("coded"))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("coded"))
     def test_coding_question_routes_to_coder(self, mock_post):
         doc = Document.objects.create(original_name="r.pdf", file_type="PDF", extracted_text="Readings: 1, 2, 3")
         response = self.client.post(
@@ -398,7 +398,7 @@ class DocumentOCRTests(APITestCase):
         )
         self.assertEqual(response.data["ollama_model"], "qwen2.5-coder:7b")
 
-    @patch("chat.model_manager.requests.post", return_value=ok_response("1. Executive Overview"))
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("1. Executive Overview"))
     def test_summary_uses_qwen3(self, mock_post):
         doc = Document.objects.create(original_name="s.pdf", file_type="PDF", extracted_text="Findings...")
         response = self.client.post(reverse("document-summary", kwargs={"pk": doc.id}), {}, format="json")
@@ -412,3 +412,75 @@ class DocumentOCRTests(APITestCase):
         source = inspect.getsource(ocr)
         for forbidden in ("import requests", "OLLAMA_URL", "/api/generate", "from chat", "import chat"):
             self.assertNotIn(forbidden, source)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocumentLimitTests(APITestCase):
+    """Phase A: configurable, reported limits (L16) and model-context fitting (L28)."""
+
+    def upload(self, name, data, mime):
+        return self.client.post(
+            reverse("document-upload"),
+            {"file": SimpleUploadedFile(name, data, content_type=mime)}, format="multipart",
+        )
+
+    @override_settings(DOCUMENT_MAX_CHARS=100)
+    def test_char_limit_is_configurable_and_reported(self):
+        response = self.upload("long.txt", ("abc " * 100).encode(), "text/plain")
+        doc = response.data["document"]
+        self.assertTrue(doc["truncated"])
+        self.assertEqual(doc["original_chars"], 399)
+        self.assertEqual(doc["limits"]["max_chars"], 100)
+
+    @override_settings(DOCUMENT_MAX_PDF_PAGES=2)
+    def test_pdf_page_limit_rejects_cleanly(self):
+        doc = pymupdf.open()
+        for _ in range(3):
+            doc.new_page().insert_text((50, 72), "A typed page with enough characters to count as text.")
+        response = self.upload("big.pdf", doc.tobytes(), "application/pdf")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("maximum is 2", response.data["error"])
+
+    @override_settings(OCR_MAX_PDF_PAGES=1)
+    @patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT)
+    def test_skipped_ocr_pages_reported_in_fields(self, mock_ocr):
+        response = self.upload("scan.pdf", make_scanned_pdf_bytes(pages=3), "application/pdf")
+        doc = response.data["document"]
+        self.assertEqual((doc["page_count"], doc["ocr_pages"], doc["ocr_pages_skipped"]), (3, 1, 2))
+
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
+    def test_long_document_fitted_to_context_window(self, mock_post):
+        text = "Reading 42 bar at valve. " * 2000  # 50,000 chars >> 8k-token window
+        doc = Document.objects.create(original_name="long.txt", file_type="TXT", extracted_text=text)
+        response = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                                    {"question": "What is the reading?"}, format="json")
+        ctx = response.data["context"]
+        self.assertTrue(ctx["context_truncated"])
+        self.assertEqual(ctx["document_chars"], 50000)
+        self.assertLess(ctx["context_chars_used"], 20000)
+        prompt = mock_post.call_args.kwargs["json"]["prompt"]
+        self.assertLess(len(prompt) / 3.0, 8192)  # whole prompt fits, so Ollama will not halve it
+        self.assertIn("USER QUESTION: What is the reading?", prompt)  # instructions survive
+        self.assertIn("fit in the model context window", prompt)
+
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
+    def test_short_document_not_truncated(self, mock_post):
+        doc = Document.objects.create(original_name="s.txt", file_type="TXT", extracted_text="Short text.")
+        response = self.client.post(reverse("document-summary", kwargs={"pk": doc.id}), {}, format="json")
+        self.assertFalse(response.data["context"]["context_truncated"])
+
+
+class CleanupCommandTests(APITestCase):
+    def test_dry_run_by_default_then_delete(self):
+        from django.core.management import call_command, CommandError
+        keep = Document.objects.create(original_name="real_report.pdf", file_type="PDF", extracted_text="x")
+        test_doc = Document.objects.create(original_name="scanned_test.pdf", file_type="PDF", extracted_text="x")
+        out = io.StringIO()
+        call_command("cleanup_dev_data", "--name", "scanned_test", stdout=out)
+        self.assertIn("Dry run", out.getvalue())
+        self.assertEqual(Document.objects.count(), 2)
+        call_command("cleanup_dev_data", "--name", "scanned_test", "--yes", stdout=io.StringIO())
+        self.assertFalse(Document.objects.filter(pk=test_doc.pk).exists())
+        self.assertTrue(Document.objects.filter(pk=keep.pk).exists())
+        with self.assertRaises(CommandError):
+            call_command("cleanup_dev_data", stdout=io.StringIO())  # no filter -> refuse

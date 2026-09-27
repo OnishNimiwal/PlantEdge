@@ -9,7 +9,11 @@ class Document(models.Model):
     # 'text' (text layer / plain text), 'ocr' (local PaddleOCR) or 'text+ocr' (mixed PDF)
     extraction_method = models.CharField(max_length=10, default='text')
     ocr_pages = models.PositiveIntegerField(default=0)
-    ocr_confidence = models.FloatField(null=True, blank=True)  # mean PaddleOCR score
+    ocr_confidence = models.FloatField(null=True, blank=True)  # mean PaddleOCR recognition score
+    page_count = models.PositiveIntegerField(default=0)
+    ocr_pages_skipped = models.PositiveIntegerField(default=0)  # scanned pages beyond OCR_MAX_PDF_PAGES
+    truncated = models.BooleanField(default=False)  # text cut at DOCUMENT_MAX_CHARS
+    original_chars = models.PositiveIntegerField(default=0)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

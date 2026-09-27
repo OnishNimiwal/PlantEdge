@@ -15,6 +15,7 @@ class DocumentListSerializer(serializers.ModelSerializer):
 class DocumentDetailSerializer(serializers.ModelSerializer):
     text_length = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
+    limits = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
@@ -26,6 +27,11 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'extraction_method',
             'ocr_pages',
             'ocr_confidence',
+            'page_count',
+            'ocr_pages_skipped',
+            'truncated',
+            'original_chars',
+            'limits',
             'uploaded_at',
             'text_length',
             'file_url',
@@ -33,6 +39,14 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
 
     def get_text_length(self, obj):
         return len(obj.extracted_text) if obj.extracted_text else 0
+
+    def get_limits(self, obj):
+        from django.conf import settings
+        return {
+            "max_chars": settings.DOCUMENT_MAX_CHARS,
+            "max_ocr_pages": settings.OCR_MAX_PDF_PAGES,
+            "max_pdf_pages": settings.DOCUMENT_MAX_PDF_PAGES,
+        }
 
     def get_file_url(self, obj):
         if obj.file:

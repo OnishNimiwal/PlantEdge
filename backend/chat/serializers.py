@@ -1,18 +1,15 @@
 import base64
 import binascii
 
+from django.conf import settings
 from rest_framework import serializers
 
+from .images import prepare_image, ImageValidationError
 from .model_registry import MODEL_REGISTRY
 
 # Special model value: let chat/router.py pick the model.
 AUTO_MODEL = "auto"
 
-# Image formats accepted by the local vision model, identified by magic bytes.
-IMAGE_SIGNATURES = (
-    b"\x89PNG\r\n\x1a\n",  # PNG
-    b"\xff\xd8\xff",       # JPEG
-)
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
@@ -24,7 +21,6 @@ class ChatSerializer(serializers.Serializer):
     images = serializers.ListField(
         child=serializers.CharField(allow_blank=False),
         required=False,
-        max_length=1,
     )
 
     def validate_model(self, value):
@@ -36,7 +32,12 @@ class ChatSerializer(serializers.Serializer):
         return value
 
     def validate_images(self, value):
+        """Decode, validate and downscale each image (see chat/images.py)."""
+        limit = settings.MAX_IMAGES_PER_MESSAGE
+        if len(value) > limit:
+            raise serializers.ValidationError(f"At most {limit} images can be attached to one message.")
         cleaned = []
+        self.image_info = []
         for item in value:
             if item.startswith("data:") and "," in item:
                 item = item.split(",", 1)[1]
@@ -46,9 +47,12 @@ class ChatSerializer(serializers.Serializer):
                 raise serializers.ValidationError("Image must be valid base64 data.")
             if len(raw) > MAX_IMAGE_BYTES:
                 raise serializers.ValidationError("Image exceeds the 10 MB limit.")
-            if not raw.startswith(IMAGE_SIGNATURES):
-                raise serializers.ValidationError("Only PNG and JPEG images are supported.")
-            cleaned.append(item)
+            try:
+                prepared = prepare_image(raw)
+            except ImageValidationError as exc:
+                raise serializers.ValidationError(str(exc))
+            cleaned.append(prepared.pop("b64"))
+            self.image_info.append(prepared)
         return cleaned
 
     def validate(self, attrs):
