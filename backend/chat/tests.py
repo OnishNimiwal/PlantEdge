@@ -33,7 +33,9 @@ _media_override = None
 
 def setUpModule():
     global _media_override
-    _media_override = override_settings(MEDIA_ROOT=_tempfile.mkdtemp(prefix="mrpl-chat-test-"))
+    # Formatting system prompt is tested separately; off here so message lists stay exact.
+    _media_override = override_settings(MEDIA_ROOT=_tempfile.mkdtemp(prefix="mrpl-chat-test-"),
+                                        CHAT_SYSTEM_PROMPT="")
     _media_override.enable()
 
 
@@ -847,3 +849,119 @@ class ConversationManagementTests(APITestCase):
         for i in range(55):
             Conversation.objects.create(title=f"c{i}")
         self.assertEqual(len(self.client.get(reverse("conversation-list")).data["conversations"]), 50)
+
+
+def ollama_stream(*chunks, thinking=False, error=None):
+    """Mock a streaming /api/chat response (NDJSON lines)."""
+    import json as _json
+    lines = []
+    if thinking:
+        lines.append({"message": {"role": "assistant", "content": "", "thinking": "hmm"}, "done": False})
+    for c in chunks:
+        lines.append({"message": {"role": "assistant", "content": c}, "done": False})
+    lines.append({"error": error} if error else {"message": {"content": ""}, "done": True, "eval_count": 5})
+    resp = Mock(status_code=200, text="")
+    resp.raise_for_status = Mock()
+    resp.iter_lines = Mock(return_value=[_json.dumps(l).encode() for l in lines])
+    resp.close = Mock()
+    return resp
+
+
+class StreamingAndSearchTests(APITestCase):
+    """Limitations follow-up: streaming, server-side search, doc conversations in list, system prompt."""
+
+    def stream(self, body):
+        import json as _json
+        r = self.client.post(reverse("chat-stream"), body, format="json")
+        if not getattr(r, "streaming", False):
+            return r, None
+        events = [_json.loads(l) for l in b"".join(r.streaming_content).decode().splitlines() if l.strip()]
+        return r, events
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_events_and_turn_recorded(self, mock_post):
+        mock_post.return_value = ollama_stream("Federated ", "learning ", "trains locally.", thinking=True)
+        r, events = self.stream({"message": "Explain federated learning."})
+        self.assertEqual(r["Content-Type"], "application/x-ndjson")
+        self.assertEqual([e["type"] for e in events], ["start", "thinking", "delta", "delta", "delta", "done"])
+        self.assertEqual(events[-1]["response"], "Federated learning trains locally.")
+        self.assertEqual(events[-1]["ollama_model"], "qwen3:8b")
+        self.assertTrue(mock_post.call_args.kwargs["stream"])
+        self.assertTrue(mock_post.call_args.kwargs["json"]["stream"])
+        conv = self.client.get(reverse("conversation-detail", kwargs={"pk": events[0]["conversation_id"]}))
+        self.assertEqual(conv.data["conversation"]["messages"][1]["content"], "Federated learning trains locally.")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_error_mid_way_is_reported_and_not_stored(self, mock_post):
+        mock_post.return_value = ollama_stream("partial", error="CUDA error: out of memory")
+        r, events = self.stream({"message": "Describe this image.", "images": [PNG_B64]})
+        self.assertEqual(events[-1]["type"], "error")
+        self.assertIn("ran out of memory", events[-1]["error"])
+        conv = self.client.get(reverse("conversation-detail", kwargs={"pk": events[0]["conversation_id"]}))
+        self.assertEqual(conv.data["conversation"]["messages"], [])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_errors_before_start_are_json(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        r, events = self.stream({"message": "hi"})
+        self.assertIsNone(events)
+        self.assertEqual(r.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        r, events = self.stream({"message": "Analyze this engineering drawing."})  # needs image
+        self.assertTrue(r.data["needs_image"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_regenerate(self, mock_post):
+        mock_post.return_value = ollama_ok("first")
+        conv_id = self.client.post(reverse("chat"), {"message": "hi"}, format="json").data["conversation_id"]
+        mock_post.return_value = ollama_stream("second")
+        r, events = self.stream({"conversation_id": conv_id, "regenerate": True})
+        self.assertEqual(events[-1]["response"], "second")
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv_id})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["hi", "second"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_search_titles_and_message_text(self, mock_post):
+        mock_post.return_value = ollama_ok("The bearing temperature was 82 C.")
+        self.client.post(reverse("chat"), {"message": "Pump notes"}, format="json")
+        mock_post.return_value = ollama_ok("Unrelated.")
+        self.client.post(reverse("chat"), {"message": "Something else"}, format="json")
+        url = reverse("conversation-list")
+        self.assertEqual([c["title"] for c in self.client.get(url, {"q": "pump"}).data["conversations"]], ["Pump notes"])
+        self.assertEqual([c["title"] for c in self.client.get(url, {"q": "BEARING"}).data["conversations"]], ["Pump notes"])
+        self.assertEqual(self.client.get(url, {"q": "zzz"}).data["conversations"], [])
+
+    def test_scope_all_includes_document_conversations(self):
+        from documents.models import Document
+        from .models import Conversation
+        doc = Document.objects.create(original_name="report.pdf", file_type="PDF", extracted_text="x")
+        Conversation.objects.create(title="chat one")
+        Conversation.objects.create(title="doc q", document=doc)
+        url = reverse("conversation-list")
+        self.assertEqual([c["title"] for c in self.client.get(url).data["conversations"]], ["chat one"])
+        both = self.client.get(url, {"scope": "all"}).data["conversations"]
+        self.assertEqual({c["title"] for c in both}, {"chat one", "doc q"})
+        docconv = next(c for c in both if c["title"] == "doc q")
+        self.assertEqual((docconv["document_id"], docconv["document_name"]), (doc.id, "report.pdf"))
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_formatting_system_prompt(self, mock_post):
+        mock_post.return_value = ollama_ok()
+        with override_settings(CHAT_SYSTEM_PROMPT="Use Markdown tables."):
+            self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual(msgs[0], {"role": "system", "content": "Use Markdown tables."})
+
+
+class StreamNegotiationTests(APITestCase):
+    @patch("chat.model_manager.requests.Session.post")
+    def test_ndjson_accept_header_is_not_rejected(self, mock_post):
+        mock_post.return_value = ollama_stream("ok")
+        r = self.client.post(reverse("chat-stream"), {"message": "hi"}, format="json",
+                             HTTP_ACCEPT="application/x-ndjson")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.streaming)
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        r = self.client.post(reverse("chat-stream"), {"message": "hi"}, format="json",
+                             HTTP_ACCEPT="application/x-ndjson")
+        self.assertEqual(r.status_code, 503)  # JSON error, not 406
+        self.assertEqual(r["Content-Type"], "application/json")

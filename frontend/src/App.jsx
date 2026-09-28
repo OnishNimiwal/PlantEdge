@@ -1,16 +1,26 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
 import ImageLightbox from './components/ImageLightbox';
-import DocumentsPage from './components/documents/DocumentsPage';
+// Loaded on demand to keep the initial bundle small.
+const DocumentsPage = lazy(() => import('./components/documents/DocumentsPage'));
 import {
-  sendMessage, fetchModels, getConversation, listConversations,
-  renameConversation, deleteConversation, regenerateLast,
+  streamMessage, fetchModels, getConversation, listConversations,
+  renameConversation, deleteConversation,
 } from './api/chatApi';
 
 const CONVERSATION_KEY = 'mrpl.chat.conversationId';
+const THEME_KEY = 'mrpl.theme';
+
+function readTheme() {
+  try {
+    return localStorage.getItem(THEME_KEY) || 'system';
+  } catch {
+    return 'system';
+  }
+}
 
 // Browser storage only remembers WHICH conversation is open; the backend holds its content.
 function readStoredConversation() {
@@ -77,6 +87,9 @@ export default function App() {
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [lightbox, setLightbox] = useState(null);
+  const [theme, setTheme] = useState(readTheme);
+  const [docRequest, setDocRequest] = useState(null); // {documentId, conversationId, nonce}
+  const searchRef = useRef('');
 
   const [models, setModels] = useState([]);
   const [limits, setLimits] = useState(null);
@@ -84,8 +97,24 @@ export default function App() {
   const composerRef = useRef(null);
 
   const refreshConversations = useCallback(() => {
-    listConversations().then(setConversations);
+    listConversations(searchRef.current).then(setConversations);
   }, []);
+
+  const handleSearch = useCallback((q) => {
+    searchRef.current = q;
+    listConversations(q).then(setConversations);
+  }, []);
+
+  useEffect(() => {
+    // 'system' follows the OS setting via prefers-color-scheme (see index.css).
+    if (theme === 'system') delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      /* per-browser convenience only */
+    }
+  }, [theme]);
 
   const openConversation = useCallback(async (id) => {
     setLoadingConversation(true);
@@ -113,21 +142,52 @@ export default function App() {
   const replaceMessage = (id, patch) =>
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
-  const runTurn = async (text, images, pendingId) => {
+  /**
+   * Stream one turn into the assistant message `msgId`. Text updates are batched
+   * (~50 ms) so long answers do not re-render Markdown on every token.
+   */
+  const streamTurn = async ({ text, images, regenerate }, msgId, previous) => {
     setBusy(true);
-    const result = await sendMessage(text, selectedModel, images, conversationId);
+    let acc = '';
+    let flushTimer = null;
+    const flush = () => {
+      flushTimer = null;
+      replaceMessage(msgId, { status: 'streaming', text: acc });
+    };
+    const final = await streamMessage(
+      { message: text, model: selectedModel, images, conversationId, regenerate },
+      (ev) => {
+        if (ev.type === 'start') {
+          if (ev.conversation_id && ev.conversation_id !== conversationId) {
+            setConversationId(ev.conversation_id);
+            storeConversation(ev.conversation_id);
+          }
+          replaceMessage(msgId, {
+            model: ev.ollama_model, routing: ev.routing?.reason,
+            routingExplanation: ev.routing?.explanation, ocr: ev.ocr || null,
+          });
+        } else if (ev.type === 'delta') {
+          acc += ev.text;
+          if (!flushTimer) flushTimer = setTimeout(flush, 50);
+        }
+      },
+    );
+    clearTimeout(flushTimer);
     setBusy(false);
-    if (result?.conversation_id && result.conversation_id !== conversationId) {
-      setConversationId(result.conversation_id);
-      storeConversation(result.conversation_id);
-    }
-    if (result?.success && typeof result.response === 'string') {
-      replaceMessage(pendingId, fromResult(result));
+    if (final.type === 'done') {
+      if (final.conversation_id && final.conversation_id !== conversationId) {
+        setConversationId(final.conversation_id);
+        storeConversation(final.conversation_id);
+      }
+      replaceMessage(msgId, { ...fromResult(final), regenerateError: null });
       refreshConversations();
+    } else if (previous) {
+      // Regenerate failed: the backend kept the previous answer, so restore it.
+      replaceMessage(msgId, { ...previous, status: 'done', regenerateError: `Regenerate failed: ${final.error}` });
     } else {
-      replaceMessage(pendingId, {
-        status: 'error',
-        error: result?.error || 'The local AI service did not return a response.',
+      replaceMessage(msgId, {
+        status: 'error', text: acc,
+        error: final.error || 'The local AI service did not return a response.',
         retry: { text, images },
       });
     }
@@ -141,30 +201,21 @@ export default function App() {
       { id: newId(), role: 'user', text, images },
       { id: pendingId, role: 'assistant', status: 'pending' },
     ]);
-    runTurn(text, images, pendingId);
+    streamTurn({ text, images }, pendingId);
   };
 
   // A failed turn is not stored by the backend, so retrying just sends it again.
   const handleRetry = (msg) => {
     if (busy || !msg.retry) return;
-    replaceMessage(msg.id, { status: 'pending', error: null });
-    runTurn(msg.retry.text, msg.retry.images, msg.id);
+    replaceMessage(msg.id, { status: 'pending', error: null, text: '' });
+    streamTurn(msg.retry, msg.id);
   };
 
-  const handleRegenerate = async (msg) => {
+  const handleRegenerate = (msg) => {
     if (busy || !conversationId) return;
     const previous = { ...msg };
-    replaceMessage(msg.id, { status: 'pending', regenerateError: null });
-    setBusy(true);
-    const result = await regenerateLast(conversationId, selectedModel);
-    setBusy(false);
-    if (result?.success && typeof result.response === 'string') {
-      replaceMessage(msg.id, { ...fromResult(result), regenerateError: null });
-      refreshConversations();
-    } else {
-      // The backend keeps the previous answer when regeneration fails.
-      replaceMessage(msg.id, { ...previous, status: 'done', regenerateError: `Regenerate failed: ${result?.error || 'unknown error'}` });
-    }
+    replaceMessage(msg.id, { status: 'pending', text: '', regenerateError: null, ocr: null });
+    streamTurn({ regenerate: true }, msg.id, previous);
   };
 
   const handleNewChat = () => {
@@ -177,11 +228,17 @@ export default function App() {
     composerRef.current?.focus();
   };
 
-  const handleSelect = (id) => {
-    setView('chat');
+  const handleSelect = (conv) => {
     setSidebarOpen(false);
-    if (busy || id === conversationId) return;
-    openConversation(id);
+    if (conv.document_id) {
+      // Document Q&A conversation: open it in the Document Assistant.
+      setView('documents');
+      setDocRequest({ documentId: conv.document_id, conversationId: conv.id, nonce: Date.now() });
+      return;
+    }
+    setView('chat');
+    if (busy || conv.id === conversationId) return;
+    openConversation(conv.id);
   };
 
   const handleRename = async (id, title) => {
@@ -217,6 +274,7 @@ export default function App() {
   const activeTitle = view === 'documents'
     ? 'Document Assistant'
     : conversations.find((c) => c.id === conversationId)?.title || 'New chat';
+  const sidebarActiveId = view === 'documents' ? docRequest?.conversationId : conversationId;
 
   return (
     <div className="app-shell">
@@ -224,13 +282,16 @@ export default function App() {
         view={view}
         onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
         conversations={conversations}
-        activeId={conversationId}
+        activeId={sidebarActiveId}
         onSelect={handleSelect}
         onNewChat={handleNewChat}
         onRename={handleRename}
         onDelete={handleDelete}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        onSearch={handleSearch}
+        theme={theme}
+        onThemeChange={setTheme}
       />
       <div className="app-main">
         <Header title={activeTitle} onMenu={() => setSidebarOpen(true)} />
@@ -257,7 +318,15 @@ export default function App() {
             </div>
           </main>
         ) : (
-          <DocumentsPage onImageClick={setLightbox} />
+          <main className="docs-view">
+            <Suspense fallback={<div className="chat-loading">Loading Document Assistant…</div>}>
+              <DocumentsPage
+                onImageClick={setLightbox}
+                openRequest={docRequest}
+                onConversationsChanged={refreshConversations}
+              />
+            </Suspense>
+          </main>
         )}
       </div>
       <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />

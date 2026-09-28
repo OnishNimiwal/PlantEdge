@@ -94,15 +94,15 @@
 }
 
 .upload-alert.error {
-  background-color: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #b91c1c;
+  background-color: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
 }
 
 .upload-alert.success {
-  background-color: #ecfdf5;
-  border: 1px solid #a7f3d0;
-  color: #047857;
+  background-color: var(--badge-green-bg);
+  border: 1px solid var(--badge-green-border);
+  color: var(--badge-green-text);
 }
 
 /* Document List */
@@ -142,7 +142,7 @@
 
 .doc-card:hover {
   background-color: var(--bg-subtle);
-  border-color: #cbd5e1;
+  border-color: var(--border-strong);
 }
 
 .doc-card.selected {
@@ -169,13 +169,13 @@
 }
 
 .doc-tag.pdf {
-  background-color: #fee2e2;
-  color: #b91c1c;
+  background-color: var(--danger-soft);
+  color: var(--danger);
 }
 
 .doc-tag.txt {
-  background-color: #e0f2fe;
-  color: #0369a1;
+  background-color: var(--tag-txt-bg);
+  color: var(--tag-txt-fg);
 }
 
 .doc-info {
@@ -222,8 +222,8 @@
 }
 
 .doc-delete-btn:hover {
-  background-color: #fee2e2;
-  color: #ef4444;
+  background-color: var(--danger-soft);
+  color: var(--danger);
 }
 
 .doc-list-empty {
@@ -238,7 +238,7 @@
 
 .empty-docs-icon {
   margin-bottom: 0.75rem;
-  color: #cbd5e1;
+  color: var(--border-strong);
 }
 
 .doc-list-empty p {
@@ -273,7 +273,7 @@
 }
 
 .empty-icon-subtle {
-  color: #cbd5e1;
+  color: var(--border-strong);
   margin-bottom: 1rem;
 }
 
@@ -346,9 +346,9 @@
 }
 
 .meta-badge.warning {
-  background-color: #fffbeb;
-  border-color: #fde68a;
-  color: #b45309;
+  background-color: var(--badge-amber-bg);
+  border-color: var(--badge-amber-border);
+  color: var(--badge-amber-text);
 }
 
 .doc-viewer-actions {
@@ -372,7 +372,7 @@
 
 .action-btn.primary {
   background-color: var(--accent-primary);
-  color: white;
+  color: var(--on-accent);
 }
 
 .action-btn.primary:hover:not(:disabled) {
@@ -387,7 +387,7 @@
 
 .action-btn.secondary:hover:not(:disabled) {
   background-color: var(--bg-subtle);
-  border-color: #cbd5e1;
+  border-color: var(--border-strong);
 }
 
 .action-btn.danger {
@@ -398,9 +398,9 @@
 }
 
 .action-btn.danger:hover {
-  background-color: #fee2e2;
-  color: #b91c1c;
-  border-color: #fca5a5;
+  background-color: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
 }
 
 .action-btn:disabled {
@@ -412,11 +412,11 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  background-color: #fef2f2;
-  color: #b91c1c;
+  background-color: var(--danger-bg);
+  color: var(--danger);
   padding: 0.5rem 1.5rem;
   font-size: 0.8rem;
-  border-bottom: 1px solid #fecaca;
+  border-bottom: 1px solid var(--danger-border);
 }
 
 /* Sub-Tabs */
@@ -538,15 +538,15 @@
 }
 
 .summary-error-state {
-  color: #b91c1c;
+  color: var(--danger);
 }
 
 .retry-btn {
   margin-top: 0.5rem;
   padding: 0.4rem 0.8rem;
-  border: 1px solid #fca5a5;
-  background-color: #fee2e2;
-  color: #b91c1c;
+  border: 1px solid var(--danger-border);
+  background-color: var(--danger-soft);
+  color: var(--danger);
   border-radius: var(--radius-sm);
   cursor: pointer;
   font-weight: 600;
@@ -645,8 +645,8 @@
 
 .doc-tag.png,
 .doc-tag.jpg {
-  background-color: #f3e8ff;
-  color: #7e22ce;
+  background-color: var(--tag-img-bg);
+  color: var(--tag-img-fg);
 }
 
 /* ===== Document Assistant: consistent with chat (UI phase) ===== */
@@ -764,3 +764,47 @@
   box-shadow: none;
 }
 
+
+/* Collapsible document list (medium screens collapse it automatically) */
+.documents-main {
+  position: relative;
+}
+
+.documents-panel-toggle {
+  position: absolute;
+  top: 0.9rem;
+  left: 0.6rem;
+  z-index: 2;
+}
+
+.documents-page.panel-collapsed .documents-sidebar {
+  display: none;
+}
+
+.documents-main .doc-viewer-header,
+.documents-main .doc-viewer-empty {
+  padding-left: 3rem;
+}
+
+.upload-progress {
+  height: 4px;
+  margin: 0 auto 0.6rem;
+  max-width: 240px;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+
+.upload-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 0.2s ease;
+}
+
+@media (max-width: 1280px) {
+  .documents-sidebar {
+    width: 300px;
+    min-width: 280px;
+  }
+}

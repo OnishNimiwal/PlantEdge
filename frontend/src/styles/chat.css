@@ -190,7 +190,7 @@
   display: block;
   height: 10px;
   border-radius: 6px;
-  background: linear-gradient(90deg, var(--bg-subtle) 0%, #e3e7ec 50%, var(--bg-subtle) 100%);
+  background: linear-gradient(90deg, var(--bg-subtle) 0%, var(--skeleton-hi) 50%, var(--bg-subtle) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.6s ease-in-out infinite;
 }
@@ -209,7 +209,7 @@
 }
 
 .msg-body {
-  color: #1f2937;
+  color: var(--text-body);
 }
 
 .stream-cursor {
@@ -252,7 +252,7 @@
   flex-wrap: wrap;
   background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid #fecaca;
+  border: 1px solid var(--danger-border);
 }
 
 .msg-error span {
@@ -290,13 +290,6 @@
   gap: 0.15rem;
   margin-top: 0.4rem;
   margin-left: -0.4rem;
-  opacity: 0.55;
-  transition: opacity 0.15s;
-}
-
-.msg-assistant:hover .msg-actions,
-.msg-actions:focus-within {
-  opacity: 1;
 }
 
 .copy-action {
@@ -396,7 +389,7 @@
   background: var(--bg-subtle);
   font-family: var(--font-mono);
   font-size: 0.84em;
-  color: #0b3f55;
+  color: var(--inline-code);
 }
 
 .md-table-wrap {
@@ -442,7 +435,7 @@
   justify-content: space-between;
   padding: 0.25rem 0.4rem 0.25rem 0.85rem;
   border-bottom: 1px solid var(--border-color);
-  background: #eef1f4;
+  background: var(--bg-code-header);
 }
 
 .code-block-lang {
@@ -473,16 +466,16 @@
 }
 
 /* Syntax highlighting (highlight.js class names, local light theme) */
-.hljs-comment, .hljs-quote { color: #6a737d; font-style: italic; }
-.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-doctag { color: #b3246b; }
-.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: #1f7a3a; }
-.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: #0b6bcb; }
-.hljs-title, .hljs-title.function_, .hljs-section { color: #7a3fc4; }
-.hljs-title.class_, .hljs-type { color: #a04b00; }
-.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property { color: #1d5d8f; }
-.hljs-params { color: #374151; }
-.hljs-meta, .hljs-meta .hljs-keyword { color: #7a5c00; }
-.hljs-deletion { color: #b91c1c; }
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-built_in, .hljs-doctag { color: var(--hl-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-template-tag { color: var(--hl-string); }
+.hljs-number, .hljs-literal, .hljs-symbol, .hljs-bullet { color: var(--hl-number); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--hl-title); }
+.hljs-title.class_, .hljs-type { color: var(--hl-type); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property { color: var(--hl-attr); }
+.hljs-params { color: var(--hl-params); }
+.hljs-meta, .hljs-meta .hljs-keyword { color: var(--hl-meta); }
+.hljs-deletion { color: var(--danger); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 700; }
 
@@ -491,7 +484,7 @@
 .chat-composer-wrap {
   flex-shrink: 0;
   padding: 0.25rem 1.25rem 0.9rem;
-  background: linear-gradient(to bottom, rgb(255 255 255 / 0), var(--bg-surface) 30%);
+  background: linear-gradient(to bottom, transparent, var(--bg-surface) 30%);
 }
 
 .chat-composer-wrap .composer {
@@ -535,7 +528,7 @@
 }
 
 .composer-input::placeholder {
-  color: #9ca3af;
+  color: var(--text-placeholder);
 }
 
 .composer-toolbar {
@@ -562,7 +555,7 @@
   border: none;
   border-radius: 50%;
   background: var(--accent-primary);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
   transition: background-color 0.15s, opacity 0.15s;
 }
@@ -572,7 +565,7 @@
 }
 
 .send-btn:disabled {
-  background: #cfd5dc;
+  background: var(--disabled-bg);
   cursor: not-allowed;
 }
 
@@ -642,7 +635,7 @@
   border: 2px solid var(--bg-surface);
   border-radius: 50%;
   background: var(--text-primary);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
 }
 
@@ -674,7 +667,7 @@
   font-size: 1.35rem;
 }
 
-.chat-empty h1 {
+.chat-empty .chat-empty-title {
   font-size: 1.6rem;
   font-weight: 650;
   letter-spacing: -0.01em;
@@ -777,7 +770,7 @@
   border: none;
   border-radius: 50%;
   background: rgb(255 255 255 / 0.14);
-  color: #fff;
+  color: #fff; /* on the dark overlay in both themes */
   cursor: pointer;
 }
 
@@ -792,3 +785,4 @@
   .msg-user-content { max-width: 90%; }
   .chat-empty { padding-top: 6vh; }
 }
+.markdown-fallback { white-space: pre-wrap; }

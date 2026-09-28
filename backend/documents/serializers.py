@@ -80,8 +80,17 @@ class DocumentUploadSerializer(serializers.Serializer):
         return value
 
 class DocumentAskSerializer(serializers.Serializer):
-    question = serializers.CharField(required=True, allow_blank=False, max_length=2000)
+    question = serializers.CharField(required=False, allow_blank=False, max_length=2000)
     conversation_id = serializers.UUIDField(required=False, allow_null=True)
+    regenerate = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        if attrs.get("regenerate"):
+            if not attrs.get("conversation_id"):
+                raise serializers.ValidationError({"conversation_id": ["Required to regenerate."]})
+        elif not attrs.get("question"):
+            raise serializers.ValidationError({"question": ["This field is required."]})
+        return attrs
 
 class DocumentReportSerializer(serializers.Serializer):
     summary = serializers.CharField(required=False, allow_blank=True, default="")

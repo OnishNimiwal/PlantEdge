@@ -210,7 +210,43 @@ class ModelManager:
             > context_window(model),
         }
 
+    def chat_stream(self, model_id, messages) -> "ChatStream":
+        """
+        Streaming variant of chat(). The HTTP request to Ollama is made here, so
+        connection / missing-model / GPU errors raise immediately (before any output
+        is sent to the client); iterate the returned ChatStream for events.
+        """
+        model = get_model(model_id or get_default_model_id())
+        ensure_local_endpoint(self.base_url)
+        image_count = sum(len(m.get("images") or []) for m in messages)
+        if image_count and not model.supports_images:
+            raise ModelRequestError(f"Model '{model.id}' does not accept images.")
+        payload = {
+            "model": model.ollama_name,
+            "messages": messages,
+            "stream": True,
+            **self._options(model),
+        }
+        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+        response, started = self._send("/api/chat", payload, model, prompt_chars, image_count, stream=True)
+        return ChatStream(model, response, started)
+
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
+        response, started = self._send(endpoint, payload, model, prompt_chars, image_count)
+        try:
+            data = response.json()
+        except ValueError as exc:
+            logger.error("Inference failed: model=%s invalid JSON from Ollama", model.id)
+            raise ModelRequestError() from exc
+        duration = int((time.monotonic() - started) * 1000)
+        logger.info(
+            "Inference success: model=%s ollama_model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
+            model.id, model.ollama_name, duration, data.get("prompt_eval_count"), data.get("eval_count"),
+        )
+        return data, duration
+
+    def _send(self, endpoint, payload, model, prompt_chars, image_count, stream=False):
+        """POST to local Ollama and validate the status. Returns (response, started)."""
         # Log metadata only - never prompt or image contents.
         estimated = int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE
         logger.info(
@@ -232,6 +268,7 @@ class ModelManager:
             response = _session().post(
                 f"{self.base_url}{endpoint}", json=payload, timeout=self.timeout,
                 allow_redirects=False,  # a redirect could bypass the local-only check
+                stream=stream,
             )
         except requests.exceptions.Timeout as exc:
             logger.warning("Inference timeout: model=%s after %dms", model.id, elapsed_ms())
@@ -258,22 +295,64 @@ class ModelManager:
 
         try:
             response.raise_for_status()
-            data = response.json()
         except requests.exceptions.HTTPError as exc:
             logger.error(
                 "Inference failed: model=%s HTTP %s", model.id, response.status_code
             )
             raise ModelRequestError() from exc
-        except ValueError as exc:
-            logger.error("Inference failed: model=%s invalid JSON from Ollama", model.id)
-            raise ModelRequestError() from exc
+        return response, started
 
-        duration = elapsed_ms()
-        logger.info(
-            "Inference success: model=%s ollama_model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
-            model.id, model.ollama_name, duration, data.get("prompt_eval_count"), data.get("eval_count"),
-        )
-        return data, duration
+
+class ChatStream:
+    """
+    Iterates an Ollama /api/chat stream as events:
+      {"type": "thinking"}               - model is reasoning (sent once; thinking text is not exposed)
+      {"type": "delta", "text": str}     - answer text
+      {"type": "done", "response", "model", "ollama_model", "duration_ms"}
+    Raises ModelManagerError if the stream breaks.
+    """
+
+    def __init__(self, model, response, started):
+        self.model, self.response, self.started = model, response, started
+
+    def __iter__(self):
+        import json
+
+        parts, thinking_sent = [], False
+        try:
+            for line in self.response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except ValueError as exc:
+                    raise ModelRequestError() from exc
+                if chunk.get("error"):
+                    logger.error("Stream failed: model=%s (%s)", self.model.id,
+                                 "GPU out of memory" if "memory" in chunk["error"].lower() else "Ollama error")
+                    raise (ModelResourceError() if "memory" in chunk["error"].lower() else ModelRequestError())
+                message = chunk.get("message") or {}
+                if message.get("thinking") and not thinking_sent:
+                    thinking_sent = True
+                    yield {"type": "thinking"}
+                if message.get("content"):
+                    parts.append(message["content"])
+                    yield {"type": "delta", "text": message["content"]}
+                if chunk.get("done"):
+                    duration = int((time.monotonic() - self.started) * 1000)
+                    logger.info(
+                        "Inference success (stream): model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
+                        self.model.id, duration, chunk.get("prompt_eval_count"), chunk.get("eval_count"),
+                    )
+                    yield {"type": "done", "response": "".join(parts).strip(), "model": self.model.id,
+                           "ollama_model": self.model.ollama_name, "duration_ms": duration}
+                    return
+        except requests.exceptions.RequestException as exc:
+            logger.error("Stream interrupted: model=%s (%s)", self.model.id, exc.__class__.__name__)
+            raise ModelUnavailableError() from exc
+        finally:
+            self.response.close()
+        raise ModelRequestError()  # stream ended without "done"
 
 
 def generate_response(model: str, prompt: str = None, images=None, messages=None) -> dict:

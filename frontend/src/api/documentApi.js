@@ -3,6 +3,8 @@
  * Handles document upload, listing, details, Q&A, summarization, docx export, and deletion.
  */
 
+import { postStream } from './chatApi';
+
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
 export async function getOCRConfig() {
@@ -15,33 +17,38 @@ export async function getOCRConfig() {
   }
 }
 
-export async function uploadDocument(file, ocrLang) {
+/**
+ * Upload with real transfer progress (XMLHttpRequest exposes upload.onprogress,
+ * fetch does not). onProgress(fraction 0..1) during transfer; the server then
+ * extracts text / runs OCR before responding.
+ */
+export function uploadDocument(file, ocrLang, onProgress) {
   const formData = new FormData();
   formData.append('file', file);
   if (ocrLang) formData.append('ocr_lang', ocrLang);
-
-  try {
-    const response = await fetch(`${API_BASE}/api/documents/upload/`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    const data = await response.json();
-    if (!response.ok) {
-      return {
-        success: false,
-        error: data.error || (data.errors ? JSON.stringify(data.errors) : 'Upload failed'),
-        status: response.status,
-      };
-    }
-    return data;
-  } catch (err) {
-    return {
-      success: false,
-      error: 'Network error communicating with server during upload.',
-      details: err.message,
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_BASE}/api/documents/upload/`);
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
-  }
+    xhr.upload.onload = () => onProgress && onProgress(1);
+    xhr.onload = () => {
+      const data = xhr.response || {};
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data);
+      } else {
+        resolve({
+          success: false,
+          error: data.error || (data.errors ? JSON.stringify(data.errors) : 'Upload failed'),
+          status: xhr.status,
+        });
+      }
+    };
+    xhr.onerror = () => resolve({ success: false, error: 'Network error communicating with server during upload.' });
+    xhr.send(formData);
+  });
 }
 
 export async function getDocuments() {
@@ -171,4 +178,13 @@ export async function deleteDocument(id) {
   } catch (err) {
     return { success: false, error: err.message };
   }
+}
+
+/** Streamed document question (or regenerate of the last answer). */
+export async function streamDocumentQuestion(id, { question, conversationId, regenerate }, onEvent) {
+  const body = {};
+  if (question) body.question = question;
+  if (conversationId) body.conversation_id = conversationId;
+  if (regenerate) body.regenerate = true;
+  return postStream(`${API_BASE}/api/documents/${id}/ask/stream/`, body, onEvent);
 }

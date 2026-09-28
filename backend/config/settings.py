@@ -154,6 +154,15 @@ OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
 _think = os.getenv('OLLAMA_THINK', '').strip().lower()
 OLLAMA_THINK = {'true': True, '1': True, 'yes': True, 'false': False, '0': False, 'no': False}.get(_think)
 
+# Formatting guidance sent as the system message in General Chat (empty = none).
+# Models usually follow it, but formatting cannot be guaranteed.
+CHAT_SYSTEM_PROMPT = os.getenv('CHAT_SYSTEM_PROMPT', (
+    "You are MRPL Local AI, an on-premise assistant for an industrial company. "
+    "Format answers in GitHub-flavored Markdown: short paragraphs, headings and lists where "
+    "they help, real Markdown tables for tabular data (never inside code blocks), and fenced "
+    "code blocks with a language tag only for actual code."
+))
+
 # Conversation context (chat/context.py): earlier messages sent with each request, and how
 # many recent messages an earlier image stays available for follow-up questions.
 CONTEXT_MAX_MESSAGES = int(os.getenv('CONTEXT_MAX_MESSAGES', '12'))

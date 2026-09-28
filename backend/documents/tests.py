@@ -615,3 +615,38 @@ class DocumentVisionPagesTests(APITestCase):
                                 {"question": "Describe the drawings on pages 1-3"}, format="json")
         self.assertEqual(both.data["vision_pages"], [1, 2])
         self.assertEqual(len(chat_images(mock_post.call_args.kwargs["json"])), 2)
+
+
+class DocumentStreamRegenerateTests(APITestCase):
+    """Limitations follow-up: streaming + regenerate for Document Q&A."""
+
+    def setUp(self):
+        self.doc = Document.objects.create(original_name="r.txt", file_type="TXT",
+                                           extracted_text="Finding: shell corrosion on E-2104A.")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_answer(self, mock_post):
+        import json as _json
+        from chat.tests import ollama_stream
+        mock_post.return_value = ollama_stream("Shell ", "corrosion.")
+        r = self.client.post(reverse("document-ask-stream", kwargs={"pk": self.doc.id}),
+                             {"question": "What was found?"}, format="json")
+        events = [_json.loads(l) for l in b"".join(r.streaming_content).decode().splitlines() if l]
+        self.assertEqual(events[0]["type"], "start")
+        self.assertEqual(events[0]["routing"]["reason"], "general_reasoning")
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["answer"], "Shell corrosion.")
+        self.assertEqual(events[-1]["ollama_model"], "qwen3:8b")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_regenerate_document_answer(self, mock_post):
+        url = reverse("document-ask", kwargs={"pk": self.doc.id})
+        mock_post.return_value = ok_response("first")
+        conv_id = self.client.post(url, {"question": "What was found?"}, format="json").data["conversation_id"]
+        mock_post.return_value = ok_response("second")
+        r = self.client.post(url, {"regenerate": True, "conversation_id": conv_id}, format="json")
+        self.assertEqual(r.data["answer"], "second")
+        self.assertEqual([m["role"] for m in mock_post.call_args.kwargs["json"]["messages"]], ["system", "user"])
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv_id})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["What was found?", "second"])
+        self.assertEqual(self.client.post(url, {"regenerate": True}, format="json").status_code, 400)

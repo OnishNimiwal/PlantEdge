@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SquarePen, MessageSquareText } from 'lucide-react';
-import { askDocument } from '../../api/documentApi';
-import { getLatestDocumentConversation } from '../../api/chatApi';
+import { streamDocumentQuestion } from '../../api/documentApi';
+import { getConversation, getLatestDocumentConversation } from '../../api/chatApi';
 import MessageBubble from '../MessageBubble';
 import MessageInput from '../MessageInput';
 
@@ -25,16 +25,21 @@ function footnotes(res) {
   return notes;
 }
 
-export default function DocumentQuestionBox({ documentId, documentName, onImageClick }) {
+export default function DocumentQuestionBox({
+  documentId, documentName, onImageClick, initialConversationId, onConversationsChanged,
+}) {
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState(null);
   const endRef = useRef(null);
 
-  // Restore this document's latest Q&A conversation from the backend.
+  // Restore the requested (or this document's latest) Q&A conversation from the backend.
   useEffect(() => {
     let cancelled = false;
-    getLatestDocumentConversation(documentId).then((conv) => {
+    const load = initialConversationId
+      ? getConversation(initialConversationId)
+      : getLatestDocumentConversation(documentId);
+    load.then((conv) => {
       if (cancelled || !conv) return;
       setConversationId(conv.id);
       setMessages(conv.messages.map((m) => ({
@@ -44,7 +49,7 @@ export default function DocumentQuestionBox({ documentId, documentName, onImageC
       })));
     });
     return () => { cancelled = true; };
-  }, [documentId]);
+  }, [documentId, initialConversationId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -52,18 +57,36 @@ export default function DocumentQuestionBox({ documentId, documentName, onImageC
 
   const replace = (id, patch) => setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
 
-  const ask = async (question, pendingId) => {
+  const ask = async ({ question, regenerate }, msgId, previous) => {
     setBusy(true);
-    const res = await askDocument(documentId, question, conversationId);
+    let acc = '';
+    let timer = null;
+    const flush = () => {
+      timer = null;
+      replace(msgId, { status: 'streaming', text: acc });
+    };
+    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate }, (ev) => {
+      if (ev.type === 'start') {
+        if (ev.conversation_id) setConversationId(ev.conversation_id);
+        replace(msgId, { model: ev.ollama_model, routing: ev.routing?.reason, routingExplanation: ev.routing?.explanation });
+      } else if (ev.type === 'delta') {
+        acc += ev.text;
+        if (!timer) timer = setTimeout(flush, 50);
+      }
+    });
+    clearTimeout(timer);
     setBusy(false);
-    if (res?.conversation_id) setConversationId(res.conversation_id);
-    if (res?.success && res.answer) {
-      replace(pendingId, {
-        status: 'done', text: res.answer, model: res.ollama_model, routing: res.routing?.reason,
-        routingExplanation: res.routing?.explanation, footnotes: footnotes(res),
+    if (final.type === 'done' && final.answer) {
+      if (final.conversation_id) setConversationId(final.conversation_id);
+      replace(msgId, {
+        status: 'done', text: final.answer, model: final.ollama_model, routing: final.routing?.reason,
+        routingExplanation: final.routing?.explanation, footnotes: footnotes(final), regenerateError: null,
       });
+      onConversationsChanged?.();
+    } else if (previous) {
+      replace(msgId, { ...previous, status: 'done', regenerateError: `Regenerate failed: ${final.error}` });
     } else {
-      replace(pendingId, { status: 'error', error: res?.error || 'Failed to get an answer from the local AI.', retry: question });
+      replace(msgId, { status: 'error', error: final.error || 'Failed to get an answer from the local AI.', retry: question });
     }
   };
 
@@ -75,13 +98,20 @@ export default function DocumentQuestionBox({ documentId, documentName, onImageC
       { id: newId(), role: 'user', text: question },
       { id: pendingId, role: 'assistant', status: 'pending' },
     ]);
-    ask(question, pendingId);
+    ask({ question }, pendingId);
   };
 
   const handleRetry = (msg) => {
     if (busy || !msg.retry) return;
     replace(msg.id, { status: 'pending', error: null });
-    ask(msg.retry, msg.id);
+    ask({ question: msg.retry }, msg.id);
+  };
+
+  const handleRegenerate = (msg) => {
+    if (busy || !conversationId) return;
+    const previous = { ...msg };
+    replace(msg.id, { status: 'pending', text: '', regenerateError: null });
+    ask({ regenerate: true }, msg.id, previous);
   };
 
   const handleNew = () => {
@@ -89,6 +119,8 @@ export default function DocumentQuestionBox({ documentId, documentName, onImageC
     setConversationId(null);
     setMessages([]);
   };
+
+  const lastAssistantId = [...messages].reverse().find((m) => m.role === 'assistant')?.id;
 
   return (
     <div className="doc-qa">
@@ -102,7 +134,14 @@ export default function DocumentQuestionBox({ documentId, documentName, onImageC
         ) : (
           <div className="chat-thread is-compact">
             {messages.map((m) => (
-              <MessageBubble key={m.id} message={m} onImageClick={onImageClick} onRetry={() => handleRetry(m)} />
+              <MessageBubble
+                key={m.id}
+                message={m}
+                onImageClick={onImageClick}
+                onRetry={() => handleRetry(m)}
+                canRegenerate={m.role === 'assistant' && m.id === lastAssistantId}
+                onRegenerate={() => handleRegenerate(m)}
+              />
             ))}
             <div ref={endRef} />
           </div>

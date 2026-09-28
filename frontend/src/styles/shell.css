@@ -94,7 +94,7 @@ button {
   height: 32px;
   border-radius: 9px;
   background: linear-gradient(135deg, var(--accent-primary), #0b3f55);
-  color: #fff;
+  color: #fff; /* always on the dark brand gradient */
   font-weight: 700;
   font-size: 0.95rem;
   letter-spacing: 0.02em;
@@ -140,7 +140,7 @@ button {
 
 .new-chat-btn:hover {
   border-color: var(--border-strong);
-  background: #fff;
+  background: var(--bg-surface);
 }
 
 .sidebar-nav {
@@ -243,7 +243,7 @@ button {
 }
 
 .conv-item.is-active {
-  background: #e7eaee;
+  background: var(--bg-active);
 }
 
 .conv-title {
@@ -286,7 +286,7 @@ button {
 }
 
 .conv-icon:hover {
-  background: #dfe3e8;
+  background: var(--bg-hover-strong);
   color: var(--text-primary);
 }
 
@@ -395,4 +395,59 @@ button {
     z-index: 30;
     background: rgb(17 24 39 / 0.35);
   }
+}
+
+/* Document Q&A conversations in the sidebar */
+.conv-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.conv-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-doc-icon {
+  flex-shrink: 0;
+  color: var(--accent-primary);
+}
+
+.conv-doc-name {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.sidebar-footer {
+  justify-content: space-between;
+}
+
+.sidebar-footer-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.sidebar-footer-status svg {
+  color: var(--badge-green-text);
+  flex-shrink: 0;
+}
+
+.theme-toggle {
+  width: 28px;
+  height: 28px;
+}
+
+.docs-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }

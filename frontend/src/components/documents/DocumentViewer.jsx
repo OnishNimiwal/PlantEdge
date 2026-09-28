@@ -14,12 +14,12 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import DocumentQuestionBox from './DocumentQuestionBox';
-import Markdown from '../Markdown';
+import Markdown from '../LazyMarkdown';
 import CopyButton from '../CopyButton';
 import { modelMeta } from '../../utils/modelLabels';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
 
-export default function DocumentViewer({ document, onDelete, onImageClick }) {
+export default function DocumentViewer({ document, onDelete, onImageClick, conversationId, onConversationsChanged }) {
   const [activeTab, setActiveTab] = useState('qa'); // 'qa' | 'summary' | 'text'
   const [summary, setSummary] = useState(null);
   const [summaryMeta, setSummaryMeta] = useState(null);
@@ -229,6 +229,8 @@ export default function DocumentViewer({ document, onDelete, onImageClick }) {
             key={document.id}
             documentId={document.id}
             onImageClick={onImageClick}
+            initialConversationId={conversationId}
+            onConversationsChanged={onConversationsChanged}
             documentName={document.original_name}
           />
         )}

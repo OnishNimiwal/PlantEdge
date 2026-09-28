@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import rehypeHighlightSubset from '../utils/highlight';
 import CopyButton from './CopyButton';
 
 const LANGUAGE_NAMES = {
@@ -59,7 +59,7 @@ export default function Markdown({ text }) {
     <div className="markdown">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { detect: false, plainText: ['text', 'txt', 'plaintext'] }]]}
+        rehypePlugins={[rehypeHighlightSubset]}
         components={components}
       >
         {text || ''}

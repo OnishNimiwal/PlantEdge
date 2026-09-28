@@ -1,5 +1,10 @@
+import json
 import logging
 
+from django.conf import settings
+from django.db.models import Q
+from django.http import StreamingHttpResponse
+from rest_framework.negotiation import BaseContentNegotiation
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -7,6 +12,7 @@ from rest_framework import status
 from .serializers import ChatSerializer, AUTO_MODEL
 from .model_registry import list_models, get_default_model_id, get_model, UnknownModelError
 from .model_manager import (
+    ModelManager,
     generate_response,
     ModelManagerError,
     ModelTimeoutError,
@@ -50,121 +56,206 @@ def select_model(data, signals=None) -> dict:
             "requires_image": False, "explanation": "model selected manually"}
 
 
+def _error(message, http_status, model_id=None, routing=None):
+    body = {"success": False, "error": message}
+    if model_id is not None:
+        body["model"] = model_id
+    if routing is not None:
+        body["routing"] = routing
+    return Response(body, status=http_status)
+
+
+def prepare_turn(data, image_info):
+    """
+    Everything before model execution, shared by the JSON and streaming endpoints:
+    context -> routing -> (OCR) -> bounded message history.
+    Returns (early_response, turn): early_response is a Response to return as-is
+    (error, or the "attach an image" reply); otherwise turn holds what execution needs.
+    """
+    data = dict(data)
+    replaced_ids, reused_ocr = (), ""
+    if data.get("regenerate"):
+        # Re-run the last question (same images / OCR text). The old answer is
+        # only removed once the new one succeeds.
+        conv = ctx.load(data["conversation_id"], create=False)
+        last = ctx.last_turn(conv) if conv else None
+        if not last:
+            return _error("There is no answer to regenerate.", status.HTTP_400_BAD_REQUEST), None
+        replaced_ids, reused_ocr = last["ids"], last["extra_context"]
+        data["message"], data["images"], image_info = last["message"], last["images"] or None, last["image_info"]
+    else:
+        conv = ctx.load(data.get("conversation_id"))
+    signals = ctx.signals(conv, exclude_ids=replaced_ids)
+
+    # Selection: router decides WHICH model (context-aware).
+    selection = select_model(data, signals)
+    model_id = selection["model_id"]
+    routing = {"mode": selection["mode"], "reason": selection["reason"],
+               "explanation": selection["explanation"]}
+
+    # A visual question with nothing to look at: ask for the image instead of
+    # sending the request to the vision model, which could only guess.
+    if selection["requires_image"]:
+        logger.info("Vision request without image: no model called")
+        ctx.discard(replaced_ids)
+        ctx.record_turn(conv, data["message"], NEEDS_IMAGE_MESSAGE, reason=selection["reason"])
+        return Response({
+            "success": True,
+            "conversation_id": str(conv.id),
+            "needs_image": True,
+            "response": NEEDS_IMAGE_MESSAGE,
+            "model": None,
+            "ollama_model": None,
+            "routing": routing,
+            "external_api": False,
+        }), None
+
+    # Document processing: local OCR when the router asks for it (image of a document).
+    ocr_info, extra_context = None, ""
+    images_for_model = data.get("images")
+    if selection.get("ocr") and data.get("images") and reused_ocr:
+        extra_context = reused_ocr  # regenerate: reuse the stored OCR text
+        if selection["reason"] == REASON_OCR_TEXT:
+            images_for_model = None
+    elif selection.get("ocr") and data.get("images"):
+        try:
+            ocr_out = processing.ocr_images(data["images"])
+        except processing.OCRError as exc:
+            return _error(f"Local OCR failed: {exc}", status.HTTP_503_SERVICE_UNAVAILABLE, model_id, routing), None
+        extra_context, ocr_info = ocr_out["text"], ocr_out["results"]
+        if selection["reason"] == REASON_OCR_TEXT:
+            images_for_model = None  # the text model reasons over the OCR text only
+
+    system = getattr(settings, "CHAT_SYSTEM_PROMPT", "") or None
+    messages, context_info = ctx.build_messages(
+        conv, data["message"], selection["model"], new_images=images_for_model,
+        extra_context=extra_context, exclude_ids=replaced_ids, system=system,
+    )
+    return None, {
+        "conv": conv, "data": data, "selection": selection, "model_id": model_id,
+        "routing": routing, "messages": messages, "context_info": context_info,
+        "extra_context": extra_context, "ocr_info": ocr_info, "image_info": image_info,
+        "replaced_ids": replaced_ids,
+    }
+
+
+def finish_turn(turn, result):
+    """Persist the exchange (replacing a regenerated turn) and build the response body."""
+    ctx.discard(turn["replaced_ids"])
+    ctx.record_turn(
+        turn["conv"], turn["data"]["message"], result["response"], model_tag=result["ollama_model"],
+        reason=turn["selection"]["reason"], images=turn["data"].get("images"),
+        image_info=turn["image_info"], extra_context=turn["extra_context"],
+    )
+    return {
+        "success": True,
+        "conversation_id": str(turn["conv"].id),
+        "response": result["response"],
+        "model": result["model"],
+        "ollama_model": result["ollama_model"],
+        "routing": turn["routing"],
+        "context": turn["context_info"],
+        "ocr": turn["ocr_info"],
+        "duration_ms": result["duration_ms"],
+        "images": turn["image_info"],
+        "context_overflow": result.get("context_overflow", False),
+        "external_api": False,
+    }
+
+
+def _model_error(exc, turn):
+    if isinstance(exc, UnknownModelError):
+        return _error(f"Unknown model '{turn['model_id']}'.", status.HTTP_400_BAD_REQUEST,
+                      turn["model_id"], turn["routing"])
+    if isinstance(exc, ModelManagerError):
+        return _error(exc.public_message, ERROR_STATUS.get(type(exc), status.HTTP_502_BAD_GATEWAY),
+                      turn["model_id"], turn["routing"])
+    logger.exception("Unexpected error during chat inference: model=%s", turn["model_id"])
+    return _error("Local AI server is unavailable.", status.HTTP_503_SERVICE_UNAVAILABLE,
+                  turn["model_id"], turn["routing"])
+
+
 class ChatAPIView(APIView):
     def post(self, request):
         serializer = ChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        data = dict(serializer.validated_data)
-        image_info = getattr(serializer, "image_info", [])
-
-        # 0. Context: backend-held conversation (history + earlier images).
-        replaced_ids, reused_ocr = (), ""
-        if data.get("regenerate"):
-            # Re-run the last question (same images / OCR text). The old answer is
-            # only removed once the new one succeeds.
-            conv = ctx.load(data["conversation_id"], create=False)
-            turn = ctx.last_turn(conv) if conv else None
-            if not turn:
-                return Response({"success": False, "error": "There is no answer to regenerate."},
-                                status=status.HTTP_400_BAD_REQUEST)
-            replaced_ids, reused_ocr = turn["ids"], turn["extra_context"]
-            data["message"], data["images"], image_info = turn["message"], turn["images"] or None, turn["image_info"]
-        else:
-            conv = ctx.load(data.get("conversation_id"))
-        signals = ctx.signals(conv, exclude_ids=replaced_ids)
-
-        # 1. Selection: router decides WHICH model (context-aware).
-        selection = select_model(data, signals)
-        model_id = selection["model_id"]
-        routing = {"mode": selection["mode"], "reason": selection["reason"],
-                   "explanation": selection["explanation"]}
-
-        # A visual question with nothing to look at: ask for the image instead of
-        # sending the request to the vision model, which could only guess.
-        if selection["requires_image"]:
-            logger.info("Vision request without image: no model called")
-            ctx.discard(replaced_ids)
-            ctx.record_turn(conv, data["message"], NEEDS_IMAGE_MESSAGE, reason=selection["reason"])
-            return Response({
-                "success": True,
-                "conversation_id": str(conv.id),
-                "needs_image": True,
-                "response": NEEDS_IMAGE_MESSAGE,
-                "model": None,
-                "ollama_model": None,
-                "routing": routing,
-                "external_api": False,
-            })
-
-        # 1b. Document processing: local OCR when the router asks for it (image of a document).
-        ocr_info, extra_context = None, ""
-        images_for_model = data.get("images")
-        if selection.get("ocr") and data.get("images") and reused_ocr:
-            extra_context = reused_ocr  # regenerate: reuse the stored OCR text
-            if selection["reason"] == REASON_OCR_TEXT:
-                images_for_model = None
-        elif selection.get("ocr") and data.get("images"):
-            try:
-                ocr_out = processing.ocr_images(data["images"])
-            except processing.OCRError as exc:
-                return Response({
-                    "success": False, "error": f"Local OCR failed: {exc}",
-                    "model": model_id, "routing": routing,
-                }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-            extra_context, ocr_info = ocr_out["text"], ocr_out["results"]
-            if selection["reason"] == REASON_OCR_TEXT:
-                images_for_model = None  # the text model reasons over the OCR text only
-
+        early, turn = prepare_turn(serializer.validated_data, getattr(serializer, "image_info", []))
+        if early is not None:
+            return early
         try:
-            messages, context_info = ctx.build_messages(
-                conv, data["message"], selection["model"], new_images=images_for_model,
-                extra_context=extra_context, exclude_ids=replaced_ids,
-            )
-            # 2. Execution: the execution layer decides HOW to call it (local Ollama only).
-            result = generate_response(selection["model"], messages=messages)
-        except UnknownModelError:
-            return Response({
-                "success": False,
-                "error": f"Unknown model '{model_id}'.",
-                "model": model_id,
-                "routing": routing,
-            }, status=status.HTTP_400_BAD_REQUEST)
-        except ModelManagerError as exc:
-            return Response({
-                "success": False,
-                "error": exc.public_message,
-                "model": model_id,
-                "routing": routing,
-            }, status=ERROR_STATUS.get(type(exc), status.HTTP_502_BAD_GATEWAY))
-        except Exception:
-            logger.exception("Unexpected error during chat inference: model=%s", model_id)
-            return Response({
-                "success": False,
-                "error": "Local AI server is unavailable.",
-                "model": model_id,
-                "routing": routing,
-            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            # Execution: the execution layer decides HOW to call it (local Ollama only).
+            result = generate_response(turn["selection"]["model"], messages=turn["messages"])
+        except Exception as exc:
+            return _model_error(exc, turn)
+        return Response(finish_turn(turn, result))
 
-        ctx.discard(replaced_ids)
-        ctx.record_turn(
-            conv, data["message"], result["response"], model_tag=result["ollama_model"],
-            reason=selection["reason"], images=data.get("images"), image_info=image_info,
-            extra_context=extra_context,
-        )
-        return Response({
-            "success": True,
-            "conversation_id": str(conv.id),
-            "response": result["response"],
-            "model": result["model"],
-            "ollama_model": result["ollama_model"],
-            "routing": routing,
-            "context": context_info,
-            "ocr": ocr_info,
-            "duration_ms": result["duration_ms"],
-            "images": image_info,
-            "context_overflow": result["context_overflow"],
-            "external_api": False,
-        })
+
+def ndjson_stream(opened, meta, on_done):
+    """
+    Serialise stream events as NDJSON lines. `opened` is a ChatStream; `on_done(event)`
+    persists the turn and returns extra fields for the final "done" line.
+    """
+    yield json.dumps({"type": "start", **meta}) + "\n"
+    try:
+        for event in opened:
+            if event["type"] == "done":
+                yield json.dumps({"type": "done", **on_done(event)}, default=str) + "\n"
+                return
+            yield json.dumps(event) + "\n"
+    except ModelManagerError as exc:
+        yield json.dumps({"type": "error", "error": exc.public_message}) + "\n"
+    except Exception:
+        logger.exception("Unexpected error while streaming")
+        yield json.dumps({"type": "error", "error": "Local AI server is unavailable."}) + "\n"
+
+
+class StreamNegotiation(BaseContentNegotiation):
+    """
+    Streaming endpoints answer with NDJSON (a plain Django StreamingHttpResponse) or,
+    for errors before streaming starts, JSON. Never reject a request with 406 just
+    because the client asked for application/x-ndjson.
+    """
+
+    def select_parser(self, request, parsers):
+        return parsers[0]
+
+    def select_renderer(self, request, renderers, format_suffix=None):
+        return renderers[0], renderers[0].media_type
+
+
+def streaming_response(generator):
+    response = StreamingHttpResponse(generator, content_type="application/x-ndjson")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"  # disable proxy buffering (e.g. nginx)
+    return response
+
+
+class ChatStreamAPIView(APIView):
+    content_negotiation_class = StreamNegotiation
+    """
+    Same request as ChatAPIView, answered as a stream of NDJSON lines:
+      {"type":"start", conversation_id, routing, ocr, images}
+      {"type":"thinking"}                        (optional, once)
+      {"type":"delta", "text"}                   (many)
+      {"type":"done", ...same fields as the JSON endpoint}  or  {"type":"error", "error"}
+    Errors before generation starts (validation, Ollama unavailable, GPU OOM...) are
+    returned as normal JSON error responses; the "attach an image" reply is plain JSON too.
+    """
+
+    def post(self, request):
+        serializer = ChatSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        early, turn = prepare_turn(serializer.validated_data, getattr(serializer, "image_info", []))
+        if early is not None:
+            return early
+        try:
+            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"])
+        except Exception as exc:
+            return _model_error(exc, turn)
+        meta = {"conversation_id": str(turn["conv"].id), "routing": turn["routing"],
+                "ollama_model": turn["selection"]["model"], "ocr": turn["ocr_info"], "images": turn["image_info"]}
+        # The turn is stored only when the stream completes (a dropped connection stores nothing).
+        return streaming_response(ndjson_stream(opened, meta, lambda event: finish_turn(turn, event)))
 
 
 class RouteAPIView(APIView):
@@ -192,15 +283,30 @@ class ModelListAPIView(APIView):
 
 
 class ConversationListAPIView(APIView):
-    """Recent conversations, optionally for one document (?document=<id>)."""
+    """
+    Recent conversations (newest first, up to 50).
+      ?document=<id>  only that document's Q&A conversations
+      ?scope=all      chat AND document conversations (default: chat only)
+      ?q=<text>       search titles and message text (case-insensitive)
+    """
 
     def get(self, request):
-        qs = Conversation.objects.all()
+        qs = Conversation.objects.select_related("document")
         doc = request.query_params.get("document")
-        qs = qs.filter(document_id=doc) if doc else qs.filter(document__isnull=True)
+        if doc:
+            qs = qs.filter(document_id=doc)
+        elif request.query_params.get("scope") != "all":
+            qs = qs.filter(document__isnull=True)
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(messages__content__icontains=q)).distinct()
         return Response({"conversations": [
-            {"id": str(c.id), "title": c.title, "updated_at": c.updated_at}
-            for c in qs[:50]
+            {
+                "id": str(c.id), "title": c.title, "updated_at": c.updated_at,
+                "document_id": c.document_id,
+                "document_name": c.document.original_name if c.document_id else None,
+            }
+            for c in qs.order_by("-updated_at")[:50]
         ]})
 
 

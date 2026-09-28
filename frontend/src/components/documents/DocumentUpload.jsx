@@ -10,6 +10,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const fileInputRef = useRef(null);
   const [ocrLanguages, setOcrLanguages] = useState([]);
   const [ocrLang, setOcrLang] = useState('');
+  const [progress, setProgress] = useState(0); // transfer fraction 0..1
 
   useEffect(() => {
     getOCRConfig().then((cfg) => {
@@ -45,8 +46,9 @@ export default function DocumentUpload({ onUploadSuccess }) {
     }
 
     setIsUploading(true);
+    setProgress(0);
     try {
-      const res = await uploadDocument(file, ocrLang);
+      const res = await uploadDocument(file, ocrLang, setProgress);
       if (res && res.success) {
         const ocrPages = res.document?.ocr_pages || 0;
         setSuccessMsg(
@@ -111,12 +113,31 @@ export default function DocumentUpload({ onUploadSuccess }) {
 
         {isUploading ? (
           <div className="upload-state">
-            <ol className="upload-steps" aria-label="Processing status">
-              <li className="is-done"><CheckCircle2 size={14} /> Uploaded</li>
-              <li className="is-active"><Loader2 size={14} className="spin-icon" /> Processing: reading text, OCR for scanned pages</li>
+            <ol className="upload-steps" aria-label="Processing status" aria-live="polite">
+              {progress < 1 ? (
+                <li className="is-active">
+                  <Loader2 size={14} className="spin-icon" /> Uploading {Math.round(progress * 100)}%
+                </li>
+              ) : (
+                <li className="is-done"><CheckCircle2 size={14} /> Uploaded</li>
+              )}
+              <li className={progress >= 1 ? 'is-active' : ''}>
+                {progress >= 1 ? <Loader2 size={14} className="spin-icon" /> : <span className="step-dot" />}
+                Processing: reading text, OCR for scanned pages
+              </li>
               <li><span className="step-dot" /> Ready</li>
             </ol>
-            <p className="upload-sub">Scanned pages take about 20 seconds each. You can keep this tab open.</p>
+            <div
+              className="upload-progress"
+              role="progressbar"
+              aria-label="Upload progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(progress * 100)}
+            >
+              <span style={{ width: `${Math.round(progress * 100)}%` }} />
+            </div>
+            <p className="upload-sub">Scanned pages take about 20 seconds each to process.</p>
           </div>
         ) : (
           <div className="upload-state">

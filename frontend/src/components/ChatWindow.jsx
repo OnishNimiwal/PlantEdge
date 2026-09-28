@@ -28,7 +28,7 @@ function EmptyState({ onSuggestion }) {
   return (
     <div className="chat-empty">
       <div className="chat-empty-mark" aria-hidden="true">M</div>
-      <h1>MRPL Local AI</h1>
+      <h2 className="chat-empty-title">MRPL Local AI</h2>
       <p className="chat-empty-sub">Your private, on-premise AI workbench.</p>
       <p className="chat-empty-hint">Ask questions, analyze documents, write code, or analyze images.</p>
       <div className="suggestion-grid">

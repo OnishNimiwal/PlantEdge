@@ -1,7 +1,12 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   SquarePen, MessageSquare, FileText, Search, Pencil, Trash2, Check, X, ShieldCheck, PanelLeftClose,
+  Sun, Moon, Monitor,
 } from 'lucide-react';
+
+const THEME_NEXT = { system: 'light', light: 'dark', dark: 'system' };
+const THEME_LABEL = { system: 'System theme', light: 'Light theme', dark: 'Dark theme' };
+const THEME_ICON = { system: Monitor, light: Sun, dark: Moon };
 
 function groupByDate(conversations) {
   const now = new Date();
@@ -58,8 +63,16 @@ function ConversationItem({ conv, active, onSelect, onRename, onDelete }) {
 
   return (
     <div className={`conv-item ${active ? 'is-active' : ''}`}>
-      <button type="button" className="conv-title" onClick={() => onSelect(conv.id)} title={conv.title}>
-        {conv.title || 'Untitled'}
+      <button
+        type="button"
+        className="conv-title"
+        onClick={() => onSelect(conv)}
+        title={conv.document_name ? `${conv.title} — ${conv.document_name}` : conv.title}
+        aria-current={active ? 'page' : undefined}
+      >
+        {conv.document_id && <FileText size={13} className="conv-doc-icon" aria-label="Document Q&A" />}
+        <span className="conv-title-text">{conv.title || 'Untitled'}</span>
+        {conv.document_name && <span className="conv-doc-name">{conv.document_name}</span>}
       </button>
       <div className="conv-actions">
         <button type="button" className="conv-icon" onClick={() => setEditing(true)} title="Rename" aria-label="Rename conversation">
@@ -75,13 +88,16 @@ function ConversationItem({ conv, active, onSelect, onRename, onDelete }) {
 
 export default function Sidebar({
   view, onViewChange, conversations, activeId, onSelect, onNewChat, onRename, onDelete, open, onClose,
+  onSearch, theme, onThemeChange,
 }) {
   const [query, setQuery] = useState('');
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return q ? conversations.filter((c) => (c.title || '').toLowerCase().includes(q)) : conversations;
-  }, [conversations, query]);
-  const groups = groupByDate(filtered);
+  // Server-side search over titles and message text (debounced).
+  useEffect(() => {
+    const t = setTimeout(() => onSearch(query), 250);
+    return () => clearTimeout(t);
+  }, [query, onSearch]);
+  const groups = groupByDate(conversations);
+  const ThemeIcon = THEME_ICON[theme] || Monitor;
 
   return (
     <>
@@ -126,7 +142,7 @@ export default function Sidebar({
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search chats"
+            placeholder="Search chats and messages"
             aria-label="Search conversations"
           />
         </div>
@@ -142,7 +158,7 @@ export default function Sidebar({
                   <ConversationItem
                     key={c.id}
                     conv={c}
-                    active={view === 'chat' && c.id === activeId}
+                    active={c.id === activeId}
                     onSelect={onSelect}
                     onRename={onRename}
                     onDelete={onDelete}
@@ -153,9 +169,20 @@ export default function Sidebar({
           )}
         </div>
 
-        <div className="sidebar-footer" title="All inference runs on local models inside the company network">
-          <ShieldCheck size={14} />
-          <span>On-premise · local models only</span>
+        <div className="sidebar-footer">
+          <span className="sidebar-footer-status" title="All inference runs on local models inside the company network">
+            <ShieldCheck size={14} />
+            <span>On-premise · local models only</span>
+          </span>
+          <button
+            type="button"
+            className="icon-btn theme-toggle"
+            onClick={() => onThemeChange(THEME_NEXT[theme] || 'system')}
+            title={`${THEME_LABEL[theme]} (click to change)`}
+            aria-label={`${THEME_LABEL[theme]}. Change theme`}
+          >
+            <ThemeIcon size={15} />
+          </button>
         </div>
       </aside>
     </>

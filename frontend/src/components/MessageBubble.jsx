@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import { RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus } from 'lucide-react';
-import Markdown from './Markdown';
+import Markdown from './LazyMarkdown';
 import CopyButton from './CopyButton';
 import { modelMeta } from '../utils/modelLabels';
 

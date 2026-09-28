@@ -19,7 +19,12 @@ from .extractors import (
     extract_document,
     DocumentExtractionError,
 )
+from chat.model_manager import ModelManager, ModelManagerError
+from chat.views import ndjson_stream, streaming_response, StreamNegotiation
 from .services import (
+    NothingToRegenerate,
+    prepare_document_question,
+    finish_document_question,
     ask_document_question,
     summarize_document,
     OllamaServiceError,
@@ -132,18 +137,46 @@ class DocumentAskView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        question = serializer.validated_data["question"]
-
+        v = serializer.validated_data
         try:
             result = ask_document_question(
-                doc, question, conversation_id=serializer.validated_data.get("conversation_id")
+                doc, v.get("question"), conversation_id=v.get("conversation_id"), regenerate=v["regenerate"],
             )
             return Response({"success": True, **result, "external_api": False})
+        except NothingToRegenerate:
+            return Response({"success": False, "error": "There is no answer to regenerate."},
+                            status=status.HTTP_400_BAD_REQUEST)
         except OllamaServiceError as exc:
             return Response(
                 {"success": False, "error": str(exc)},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
+
+
+class DocumentAskStreamView(APIView):
+    """Streaming variant of DocumentAskView (NDJSON, same event format as /api/chat/stream/)."""
+
+    content_negotiation_class = StreamNegotiation
+
+    def post(self, request, pk):
+        doc = get_object_or_404(Document, pk=pk)
+        serializer = DocumentAskSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response({"success": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
+        v = serializer.validated_data
+        try:
+            prepared = prepare_document_question(doc, v.get("question"), v.get("conversation_id"), v["regenerate"])
+        except NothingToRegenerate:
+            return Response({"success": False, "error": "There is no answer to regenerate."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        try:
+            opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"])
+        except ModelManagerError as exc:
+            return Response({"success": False, "error": exc.public_message},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return streaming_response(ndjson_stream(
+            opened, prepared["meta"], lambda event: finish_document_question(prepared, event),
+        ))
 
 class DocumentSummaryView(APIView):
     def post(self, request, pk):
