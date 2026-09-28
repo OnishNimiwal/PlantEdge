@@ -14,7 +14,9 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 
 class ChatSerializer(serializers.Serializer):
-    message = serializers.CharField(required=True, allow_blank=False)
+    # Required unless regenerate=True (then the last question is re-run).
+    message = serializers.CharField(required=False, allow_blank=False)
+    regenerate = serializers.BooleanField(required=False, default=False)
     # "auto" (default when omitted) -> router picks; a registry id -> manual choice.
     model = serializers.CharField(required=False, allow_blank=False, default=AUTO_MODEL)
     # Conversation to continue (omitted/unknown -> a new conversation is started).
@@ -58,6 +60,11 @@ class ChatSerializer(serializers.Serializer):
         return cleaned
 
     def validate(self, attrs):
+        if attrs.get("regenerate"):
+            if not attrs.get("conversation_id"):
+                raise serializers.ValidationError({"conversation_id": ["Required to regenerate."]})
+        elif not attrs.get("message"):
+            raise serializers.ValidationError({"message": ["This field is required."]})
         model = attrs["model"]
         if attrs.get("images") and model != AUTO_MODEL and not MODEL_REGISTRY[model].supports_images:
             raise serializers.ValidationError(

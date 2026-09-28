@@ -51,7 +51,7 @@ export async function sendMessage(message, model, images, conversationId) {
   } catch (err) {
     return {
       success: false,
-      error: "Unable to connect to Django backend. Ensure backend is running.",
+      error: "Unable to connect to the workbench server. Check that it is running.",
       details: err.message,
     };
   }
@@ -90,5 +90,57 @@ export async function getLatestDocumentConversation(documentId) {
     return latest ? getConversation(latest.id) : null;
   } catch {
     return null;
+  }
+}
+
+/** Recent chat conversations (newest first, up to 50). */
+export async function listConversations() {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/conversations/`);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return data.conversations || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function renameConversation(id, title) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/conversations/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteConversation(id) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/conversations/${id}/`, { method: 'DELETE' });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Re-run the last question of a conversation; the old answer is replaced on success. */
+export async function regenerateLast(conversationId, model) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation_id: conversationId, regenerate: true, ...(model ? { model } : {}) }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      return { success: false, error: extractError(data, response.status), status: response.status };
+    }
+    return data;
+  } catch (err) {
+    return { success: false, error: 'Unable to connect to the workbench server.', details: err.message };
   }
 }

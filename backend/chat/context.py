@@ -37,8 +37,9 @@ def _image_turns():
     return int(getattr(settings, "CONTEXT_IMAGE_TURNS", 8))
 
 
-def load(conversation_id=None, document=None) -> Conversation:
-    """Return the requested conversation, or a new one if the id is missing/unknown."""
+def load(conversation_id=None, document=None, create=True):
+    """Return the requested conversation, or a new one if the id is missing/unknown
+    (None instead when create=False)."""
     if conversation_id:
         try:
             conv = Conversation.objects.filter(id=uuid.UUID(str(conversation_id))).first()
@@ -46,16 +47,42 @@ def load(conversation_id=None, document=None) -> Conversation:
             conv = None
         if conv and (document is None or conv.document_id == document.id):
             return conv
-    return Conversation.objects.create(document=document)
+    return Conversation.objects.create(document=document) if create else None
 
 
-def _recent(conv, limit):
-    return list(conv.messages.order_by("-id").prefetch_related("attachments")[:limit])[::-1]
+def _recent(conv, limit, exclude_ids=()):
+    qs = conv.messages.exclude(id__in=exclude_ids).order_by("-id").prefetch_related("attachments")
+    return list(qs[:limit])[::-1]
 
 
-def signals(conv) -> dict:
+def last_turn(conv):
+    """
+    The latest user question + assistant answer, for regeneration:
+    {"ids", "message", "images", "image_info", "extra_context"} or None.
+    """
+    msgs = list(conv.messages.order_by("-id").prefetch_related("attachments")[:2])[::-1]
+    if len(msgs) != 2 or msgs[0].role != ChatMessage.ROLE_USER or msgs[1].role != ChatMessage.ROLE_ASSISTANT:
+        return None
+    user = msgs[0]
+    atts = list(user.attachments.all())
+    return {
+        "ids": [m.id for m in msgs],
+        "message": user.content,
+        "images": [_attachment_b64(a) for a in atts],
+        "image_info": [{"width": a.width, "height": a.height,
+                        "format": "JPEG" if a.file.name.lower().endswith(".jpg") else "PNG"} for a in atts],
+        "extra_context": user.extra_context,
+    }
+
+
+def discard(message_ids):
+    """Delete messages (e.g. the turn being regenerated) and their image files."""
+    ChatMessage.objects.filter(id__in=message_ids).delete()
+
+
+def signals(conv, exclude_ids=()) -> dict:
     """Context signals for the router: is an earlier image available, what was the last route?"""
-    recent = _recent(conv, _image_turns())
+    recent = _recent(conv, _image_turns(), exclude_ids)
     image_available = any(m.attachments.all() for m in recent if m.role == ChatMessage.ROLE_USER)
     last_assistant = next((m for m in reversed(recent) if m.role == ChatMessage.ROLE_ASSISTANT), None)
     return {
@@ -73,7 +100,7 @@ def _attachment_b64(att) -> str:
 
 
 def build_messages(conv, user_text, model_tag, new_images=None, system=None, reserved_chars=0,
-                   extra_context=""):
+                   extra_context="", exclude_ids=()):
     """
     Build Ollama chat messages: [system?] + bounded history + current user message.
     `extra_context` (e.g. OCR text of the attached images) is appended to the current message.
@@ -85,7 +112,7 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
     new_images = new_images or []
     budget = int(prompt_budget_tokens(model) * CHARS_PER_TOKEN) - len(user_text) - len(system or "") - reserved_chars
 
-    history = _recent(conv, _max_messages())
+    history = _recent(conv, _max_messages(), exclude_ids)
     reuse_images = []
     reused_from = None
     if model.supports_images and not new_images:
@@ -124,10 +151,11 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
         current["images"] = new_images
     messages.append(current)
 
+    available = conv.messages.exclude(id__in=exclude_ids).count()
     info = {
         "history_messages_used": len(selected),
-        "history_messages_available": conv.messages.count(),
-        "history_truncated": len(selected) < conv.messages.count(),
+        "history_messages_available": available,
+        "history_truncated": len(selected) < available,
         "reused_images": len(reuse_images),
     }
     logger.info(

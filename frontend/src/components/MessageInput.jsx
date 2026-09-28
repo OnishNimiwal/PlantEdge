@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, ImagePlus, X, SquarePen } from 'lucide-react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { ArrowUp, Paperclip, X, Loader2 } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
 // Large images exhaust the 8 GB GPU in the vision model. The backend enforces the
@@ -25,16 +25,25 @@ function resizeImage(file, maxSide) {
   });
 }
 
-export default function MessageInput({
-  onSendMessage,
-  disabled,
-  models,
-  selectedModel,
-  onModelChange,
-  limits,
-  onNewChat,
-  hasHistory,
-}) {
+/**
+ * Composer: textarea (Enter = send, Shift+Enter = newline), attachments, model picker.
+ * Imperative handle: setText(text), focus(), openFilePicker().
+ */
+const MessageInput = forwardRef(function MessageInput(
+  {
+    onSend,
+    busy,
+    models,
+    selectedModel,
+    onModelChange,
+    limits,
+    allowAttachments = true,
+    showModelPicker = true,
+    placeholder = 'Ask anything…',
+    footnote = 'Runs on-premise with local models. Responses can contain mistakes — verify important information.',
+  },
+  ref,
+) {
   const maxImages = limits?.max_images_per_message || 1;
   const maxSide = limits?.vision_max_side || 1024;
   const [input, setInput] = useState('');
@@ -46,15 +55,32 @@ export default function MessageInput({
   const isAuto = selectedModel === 'auto';
   const currentModel = models?.find((m) => m.id === selectedModel);
   // In auto mode an attached image makes the router pick the vision model.
-  const supportsImages = isAuto || Boolean(currentModel?.supports_images);
+  const supportsImages = allowAttachments && (isAuto || Boolean(currentModel?.supports_images));
+
+  const autoSize = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  };
+
+  useImperativeHandle(ref, () => ({
+    setText: (text) => {
+      setInput(text);
+      requestAnimationFrame(() => {
+        autoSize();
+        textareaRef.current?.focus();
+      });
+    },
+    focus: () => textareaRef.current?.focus(),
+    openFilePicker: () => fileRef.current?.click(),
+  }));
 
   useEffect(() => {
-    if (!disabled && textareaRef.current) {
-      textareaRef.current.focus();
-    }
-  }, [disabled]);
+    if (!busy) textareaRef.current?.focus();
+  }, [busy]);
 
-  // Drop an attached image if the user switches to a text-only model.
+  // Drop attached images if the user switches to a text-only model.
   useEffect(() => {
     if (!supportsImages) {
       setImages([]);
@@ -62,36 +88,25 @@ export default function MessageInput({
     }
   }, [supportsImages]);
 
-  const handleSubmit = (e) => {
-    if (e) e.preventDefault();
+  const submit = (e) => {
+    e?.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || disabled) return;
-
-    onSendMessage(trimmed, images);
+    if (!trimmed || busy) return;
+    onSend(trimmed, images);
     setInput('');
     setImages([]);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
+    setImageError(null);
+    requestAnimationFrame(autoSize);
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      handleSubmit();
+      submit();
     }
   };
 
-  const handleInputChange = (e) => {
-    setInput(e.target.value);
-    // Auto adjust height
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 180)}px`;
-    }
-  };
-
-  const handleFileChange = async (e) => {
+  const handleFiles = async (e) => {
     const files = Array.from(e.target.files || []);
     e.target.value = '';
     if (!files.length) return;
@@ -102,7 +117,7 @@ export default function MessageInput({
     }
     const room = maxImages - images.length;
     if (files.length > room) {
-      setImageError(`At most ${maxImages} image${maxImages > 1 ? 's' : ''} per message.`);
+      setImageError(`You can attach up to ${maxImages} image${maxImages > 1 ? 's' : ''} per message.`);
     }
     try {
       const resized = await Promise.all(files.slice(0, Math.max(room, 0)).map((f) => resizeImage(f, maxSide)));
@@ -113,98 +128,84 @@ export default function MessageInput({
   };
 
   return (
-    <form className="input-form" onSubmit={handleSubmit}>
-      {images.length > 0 && (
-        <div className="attachment-row">
-          {images.map((src, idx) => (
-            <div className="attachment-preview" key={idx}>
-              <img src={src} alt={`Attached ${idx + 1}`} />
-              <button
-                type="button"
-                className="attachment-remove"
-                onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
-                title="Remove image"
-                aria-label="Remove image"
-              >
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="input-container">
-        {supportsImages && (
-          <>
-            <button
-              type="button"
-              className="attach-button"
-              onClick={() => fileRef.current?.click()}
-              disabled={disabled || images.length >= maxImages}
-              title={`Attach up to ${maxImages} images (PNG/JPEG)`}
-              aria-label="Attach image"
-            >
-              <ImagePlus size={18} />
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/png,image/jpeg"
-              multiple={maxImages > 1}
-              onChange={handleFileChange}
-              hidden
-            />
-          </>
+    <form className="composer" onSubmit={submit}>
+      <div className={`composer-box ${busy ? 'is-busy' : ''}`}>
+        {images.length > 0 && (
+          <div className="composer-attachments">
+            {images.map((src, idx) => (
+              <div className="composer-thumb" key={idx}>
+                <img src={src} alt={`Attachment ${idx + 1}`} />
+                <button
+                  type="button"
+                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
+                  aria-label="Remove image"
+                  title="Remove image"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
+
         <textarea
           ref={textareaRef}
-          className="chat-textarea"
+          className="composer-input"
           value={input}
-          onChange={handleInputChange}
+          onChange={(e) => {
+            setInput(e.target.value);
+            autoSize();
+          }}
           onKeyDown={handleKeyDown}
-          placeholder={`Ask ${isAuto ? 'the local AI (auto model routing)' : currentModel?.name || 'the local Qwen model'}... (Press Enter to send, Shift+Enter for newline)`}
+          placeholder={placeholder}
           rows={1}
-          disabled={disabled}
+          aria-label="Message"
         />
-        <button
-          type="submit"
-          className="send-button"
-          disabled={disabled || !input.trim()}
-          title="Send message"
-        >
-          {disabled ? (
-            <Loader2 size={18} className="spin-icon" />
-          ) : (
-            <Send size={18} />
-          )}
-        </button>
-      </div>
-      <div className="input-footer">
-        {onNewChat && (
+
+        <div className="composer-toolbar">
+          <div className="composer-tools">
+            {supportsImages && (
+              <>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => fileRef.current?.click()}
+                  disabled={images.length >= maxImages}
+                  title={`Attach images (PNG/JPEG, up to ${maxImages})`}
+                  aria-label="Attach images"
+                >
+                  <Paperclip size={18} />
+                </button>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  multiple={maxImages > 1}
+                  onChange={handleFiles}
+                  hidden
+                />
+              </>
+            )}
+            {showModelPicker && (
+              <ModelSelector models={models} value={selectedModel} onChange={onModelChange} disabled={busy} />
+            )}
+          </div>
           <button
-            type="button"
-            className="new-chat-button"
-            onClick={onNewChat}
-            disabled={disabled || !hasHistory}
-            title="Start a new conversation (the current one stays saved on the server)"
+            type="submit"
+            className="send-btn"
+            disabled={busy || !input.trim()}
+            title="Send (Enter)"
+            aria-label="Send message"
           >
-            <SquarePen size={13} />
-            <span>New chat</span>
+            {busy ? <Loader2 size={18} className="spin" /> : <ArrowUp size={18} />}
           </button>
-        )}
-        <ModelSelector
-          models={models}
-          value={selectedModel}
-          onChange={onModelChange}
-          disabled={disabled}
-        />
-        <span className="privacy-hint">
-          {imageError ? (
-            <span className="attachment-error">{imageError}</span>
-          ) : (
-            '🔒 Strictly on-premise. Prompts and data never leave PC5.'
-          )}
-        </span>
+        </div>
+      </div>
+      <div className={`composer-footnote ${imageError ? 'is-error' : ''}`}>
+        {imageError || footnote}
       </div>
     </form>
   );
-}
+});
+
+export default MessageInput;

@@ -54,23 +54,36 @@ class ChatAPIView(APIView):
     def post(self, request):
         serializer = ChatSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        data = serializer.validated_data
+        data = dict(serializer.validated_data)
+        image_info = getattr(serializer, "image_info", [])
 
         # 0. Context: backend-held conversation (history + earlier images).
-        conv = ctx.load(data.get("conversation_id"))
-        signals = ctx.signals(conv)
+        replaced_ids, reused_ocr = (), ""
+        if data.get("regenerate"):
+            # Re-run the last question (same images / OCR text). The old answer is
+            # only removed once the new one succeeds.
+            conv = ctx.load(data["conversation_id"], create=False)
+            turn = ctx.last_turn(conv) if conv else None
+            if not turn:
+                return Response({"success": False, "error": "There is no answer to regenerate."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            replaced_ids, reused_ocr = turn["ids"], turn["extra_context"]
+            data["message"], data["images"], image_info = turn["message"], turn["images"] or None, turn["image_info"]
+        else:
+            conv = ctx.load(data.get("conversation_id"))
+        signals = ctx.signals(conv, exclude_ids=replaced_ids)
 
         # 1. Selection: router decides WHICH model (context-aware).
         selection = select_model(data, signals)
         model_id = selection["model_id"]
         routing = {"mode": selection["mode"], "reason": selection["reason"],
                    "explanation": selection["explanation"]}
-        image_info = getattr(serializer, "image_info", [])
 
         # A visual question with nothing to look at: ask for the image instead of
         # sending the request to the vision model, which could only guess.
         if selection["requires_image"]:
             logger.info("Vision request without image: no model called")
+            ctx.discard(replaced_ids)
             ctx.record_turn(conv, data["message"], NEEDS_IMAGE_MESSAGE, reason=selection["reason"])
             return Response({
                 "success": True,
@@ -86,7 +99,11 @@ class ChatAPIView(APIView):
         # 1b. Document processing: local OCR when the router asks for it (image of a document).
         ocr_info, extra_context = None, ""
         images_for_model = data.get("images")
-        if selection.get("ocr") and data.get("images"):
+        if selection.get("ocr") and data.get("images") and reused_ocr:
+            extra_context = reused_ocr  # regenerate: reuse the stored OCR text
+            if selection["reason"] == REASON_OCR_TEXT:
+                images_for_model = None
+        elif selection.get("ocr") and data.get("images"):
             try:
                 ocr_out = processing.ocr_images(data["images"])
             except processing.OCRError as exc:
@@ -101,7 +118,7 @@ class ChatAPIView(APIView):
         try:
             messages, context_info = ctx.build_messages(
                 conv, data["message"], selection["model"], new_images=images_for_model,
-                extra_context=extra_context,
+                extra_context=extra_context, exclude_ids=replaced_ids,
             )
             # 2. Execution: the execution layer decides HOW to call it (local Ollama only).
             result = generate_response(selection["model"], messages=messages)
@@ -128,6 +145,7 @@ class ChatAPIView(APIView):
                 "routing": routing,
             }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
+        ctx.discard(replaced_ids)
         ctx.record_turn(
             conv, data["message"], result["response"], model_tag=result["ollama_model"],
             reason=selection["reason"], images=data.get("images"), image_info=image_info,
@@ -182,7 +200,7 @@ class ConversationListAPIView(APIView):
         qs = qs.filter(document_id=doc) if doc else qs.filter(document__isnull=True)
         return Response({"conversations": [
             {"id": str(c.id), "title": c.title, "updated_at": c.updated_at}
-            for c in qs[:20]
+            for c in qs[:50]
         ]})
 
 
@@ -192,6 +210,18 @@ class ConversationDetailAPIView(APIView):
         if not conv:
             return Response({"success": False, "error": "Conversation not found."}, status=404)
         return Response({"success": True, "conversation": ctx.serialize(conv)})
+
+    def patch(self, request, pk):
+        """Rename: {"title": "..."}."""
+        conv = Conversation.objects.filter(pk=pk).first()
+        if not conv:
+            return Response({"success": False, "error": "Conversation not found."}, status=404)
+        title = request.data.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return Response({"success": False, "error": "Title must not be empty."}, status=400)
+        conv.title = title.strip()[:200]
+        conv.save(update_fields=["title"])  # renaming does not reorder the list
+        return Response({"success": True, "id": str(conv.id), "title": conv.title})
 
     def delete(self, request, pk):
         deleted, _ = Conversation.objects.filter(pk=pk).delete()

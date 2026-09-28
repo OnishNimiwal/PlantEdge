@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   FileText,
   Sparkles,
@@ -8,16 +8,18 @@ import {
   Layers,
   MessageSquare,
   FileCode,
-  Copy,
-  Check,
   Loader2,
   AlertTriangle,
   ScanText,
+  CheckCircle2,
 } from 'lucide-react';
 import DocumentQuestionBox from './DocumentQuestionBox';
+import Markdown from '../Markdown';
+import CopyButton from '../CopyButton';
+import { modelMeta } from '../../utils/modelLabels';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
 
-export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
+export default function DocumentViewer({ document, onDelete, onImageClick }) {
   const [activeTab, setActiveTab] = useState('qa'); // 'qa' | 'summary' | 'text'
   const [summary, setSummary] = useState(null);
   const [summaryMeta, setSummaryMeta] = useState(null);
@@ -27,8 +29,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
   const [downloadingDocx, setDownloadingDocx] = useState(false);
   const [downloadError, setDownloadError] = useState(null);
 
-  const [copiedText, setCopiedText] = useState(false);
-  const [copiedSummary, setCopiedSummary] = useState(false);
+  const summaryRef = useRef(null);
 
   if (!document) {
     return (
@@ -101,17 +102,6 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
     }
   };
 
-  const handleCopyText = (content, isSum = false) => {
-    navigator.clipboard.writeText(content);
-    if (isSum) {
-      setCopiedSummary(true);
-      setTimeout(() => setCopiedSummary(false), 2000);
-    } else {
-      setCopiedText(true);
-      setTimeout(() => setCopiedText(false), 2000);
-    }
-  };
-
   return (
     <div className="document-viewer">
       {/* Document Top Bar */}
@@ -122,6 +112,9 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
               {document.file_type}
             </span>
             <h2 className="doc-header-title">{document.original_name}</h2>
+            <span className="status-chip is-ready" title="Text extracted; ready for questions and summaries">
+              <CheckCircle2 size={12} /> Ready
+            </span>
           </div>
 
           <div className="doc-meta-badges">
@@ -235,6 +228,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
           <DocumentQuestionBox
             key={document.id}
             documentId={document.id}
+            onImageClick={onImageClick}
             documentName={document.original_name}
           />
         )}
@@ -258,23 +252,13 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
             ) : summary ? (
               <div className="summary-card">
                 <div className="summary-card-header">
-                  <h3>Executive Summary</h3>
-                  {summaryMeta?.model && (
-                    <span className="doc-model-tags">
-                      <span className="message-model-tag">Model: {summaryMeta.model}</span>
-                      {summaryMeta.routing && (
-                        <span className="message-model-tag message-routing-tag">Routing: {summaryMeta.routing}</span>
-                      )}
-                    </span>
-                  )}
-                  <button
-                    className="copy-btn"
-                    onClick={() => handleCopyText(summary, true)}
-                    title="Copy summary"
-                  >
-                    {copiedSummary ? <Check size={14} className="copied-icon" /> : <Copy size={14} />}
-                    <span>{copiedSummary ? 'Copied' : 'Copy'}</span>
-                  </button>
+                  <div>
+                    <h3>Executive Summary</h3>
+                    {summaryMeta?.model && (
+                      <span className="msg-meta-detail">MRPL Local AI · {modelMeta(summaryMeta.model, summaryMeta.routing)}</span>
+                    )}
+                  </div>
+                  <CopyButton getText={() => summaryRef.current?.innerText?.trim() || summary} label="Copy" />
                 </div>
                 {summaryMeta?.context?.context_truncated && (
                   <span className="context-note">
@@ -282,13 +266,8 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
                     {summaryMeta.context.document_chars.toLocaleString()} characters (model context window limit).
                   </span>
                 )}
-                <div className="summary-content">
-                  {summary.split('\n').map((line, idx) => (
-                    <React.Fragment key={idx}>
-                      {line}
-                      {idx < summary.split('\n').length - 1 && <br />}
-                    </React.Fragment>
-                  ))}
+                <div className="summary-content" ref={summaryRef}>
+                  <Markdown text={summary} />
                 </div>
               </div>
             ) : (
@@ -311,14 +290,7 @@ export default function DocumentViewer({ document, onDelete, onUpdateDoc }) {
               <span className="text-char-info">
                 Raw Extracted Content ({(document.extracted_text || "").length.toLocaleString()} characters)
               </span>
-              <button
-                className="copy-btn"
-                onClick={() => handleCopyText(document.extracted_text || "")}
-                title="Copy extracted text"
-              >
-                {copiedText ? <Check size={14} className="copied-icon" /> : <Copy size={14} />}
-                <span>{copiedText ? 'Copied' : 'Copy Text'}</span>
-              </button>
+              <CopyButton getText={() => document.extracted_text || ''} label="Copy text" />
             </div>
             <pre className="extracted-text-viewer">
               {document.extracted_text || "No text available."}

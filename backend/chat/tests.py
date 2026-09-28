@@ -789,3 +789,61 @@ class OCRVisionIntegrationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertIn("Local OCR failed", response.data["error"])
         mock_post.assert_not_called()
+
+
+class ConversationManagementTests(APITestCase):
+    """UI phase: rename, regenerate, list size."""
+
+    def post(self, body):
+        return self.client.post(reverse("chat"), body, format="json")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_rename(self, mock_post):
+        mock_post.return_value = ollama_ok()
+        conv_id = self.post({"message": "hello"}).data["conversation_id"]
+        url = reverse("conversation-detail", kwargs={"pk": conv_id})
+        r = self.client.patch(url, {"title": "  Pump vibration notes  "}, format="json")
+        self.assertEqual(r.data["title"], "Pump vibration notes")
+        self.assertEqual(self.client.get(url).data["conversation"]["title"], "Pump vibration notes")
+        self.assertEqual(self.client.patch(url, {"title": " "}, format="json").status_code, 400)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_regenerate_replaces_last_answer(self, mock_post):
+        mock_post.return_value = ollama_ok("first answer")
+        conv_id = self.post({"message": "Explain federated learning."}).data["conversation_id"]
+        mock_post.return_value = ollama_ok("second answer")
+        r = self.post({"conversation_id": conv_id, "regenerate": True})
+        self.assertEqual(r.data["response"], "second answer")
+        sent = mock_post.call_args.kwargs["json"]["messages"]
+        self.assertEqual(sent, [{"role": "user", "content": "Explain federated learning."}])  # old turn excluded
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv_id})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["Explain federated learning.", "second answer"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_regenerate_keeps_images_and_failure_keeps_old_answer(self, mock_post):
+        mock_post.return_value = ollama_ok("a red square")
+        conv_id = self.post({"message": "Describe this image.", "images": [PNG_B64]}).data["conversation_id"]
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        failed = self.post({"conversation_id": conv_id, "regenerate": True})
+        self.assertEqual(failed.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        url = reverse("conversation-detail", kwargs={"pk": conv_id})
+        self.assertEqual(self.client.get(url).data["conversation"]["messages"][1]["content"], "a red square")
+        mock_post.side_effect = None
+        mock_post.return_value = ollama_ok("a small red square")
+        r = self.post({"conversation_id": conv_id, "regenerate": True})
+        self.assertEqual(r.data["ollama_model"], "qwen2.5vl:7b")
+        self.assertEqual(sent_user_message(mock_post)["images"], [PNG_B64])
+        msgs = self.client.get(url).data["conversation"]["messages"]
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(len(msgs[0]["images"]), 1)
+
+    def test_regenerate_without_turn_or_id(self):
+        self.assertEqual(self.post({"regenerate": True}).status_code, 400)
+        r = self.post({"regenerate": True, "conversation_id": "00000000-0000-0000-0000-000000000000"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_list_returns_up_to_50(self):
+        from .models import Conversation
+        for i in range(55):
+            Conversation.objects.create(title=f"c{i}")
+        self.assertEqual(len(self.client.get(reverse("conversation-list")).data["conversations"]), 50)

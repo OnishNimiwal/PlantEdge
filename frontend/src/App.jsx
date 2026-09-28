@@ -1,9 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import ChatWindow from './components/ChatWindow';
 import MessageInput from './components/MessageInput';
+import ImageLightbox from './components/ImageLightbox';
 import DocumentsPage from './components/documents/DocumentsPage';
-import { sendMessage, fetchModels, getConversation } from './api/chatApi';
+import {
+  sendMessage, fetchModels, getConversation, listConversations,
+  renameConversation, deleteConversation, regenerateLast,
+} from './api/chatApi';
 
 const CONVERSATION_KEY = 'mrpl.chat.conversationId';
 
@@ -25,151 +30,237 @@ function storeConversation(id) {
   }
 }
 
-function toUiMessages(conversation) {
-  return conversation.messages.map((m, idx) => ({
-    id: `${conversation.id}-${idx}`,
-    sender: m.role === 'user' ? 'user' : 'bot',
+let seq = 0;
+const newId = () => `m${Date.now()}-${seq++}`;
+
+function ocrFootnote(result) {
+  const withLayout = (result.ocr || []).some((o) => o.complex_layout);
+  return withLayout ? ['A table or multi-column layout was detected; reading order of the OCR text may be wrong.'] : [];
+}
+
+/** Server message -> UI message */
+function fromServer(conv) {
+  return conv.messages.map((m) => ({
+    id: newId(),
+    role: m.role,
     text: m.content,
-    time: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     images: m.images || [],
     model: m.role === 'assistant' ? m.model : null,
     routing: m.role === 'assistant' ? m.routing_reason : null,
+    info: m.role === 'assistant' && !m.model && m.routing_reason === 'vision',
+    status: 'done',
   }));
 }
 
+/** API response -> assistant message */
+function fromResult(result) {
+  return {
+    role: 'assistant',
+    text: result.response,
+    model: result.needs_image ? null : result.ollama_model || result.model,
+    routing: result.routing?.reason,
+    routingExplanation: result.routing?.explanation,
+    info: Boolean(result.needs_image),
+    ocr: result.ocr || null,
+    footnotes: ocrFootnote(result),
+    status: 'done',
+  };
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('chat'); // 'chat' | 'documents'
+  const [view, setView] = useState('chat'); // 'chat' | 'documents'
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Chat State
   const [messages, setMessages] = useState([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
+  const [conversations, setConversations] = useState([]);
+  const [lightbox, setLightbox] = useState(null);
 
-  // Local model registry. 'auto' = backend router picks; a model id = manual choice.
   const [models, setModels] = useState([]);
   const [limits, setLimits] = useState(null);
   const [selectedModel, setSelectedModel] = useState('auto');
-  const [conversationId, setConversationId] = useState(null);
+  const composerRef = useRef(null);
+
+  const refreshConversations = useCallback(() => {
+    listConversations().then(setConversations);
+  }, []);
+
+  const openConversation = useCallback(async (id) => {
+    setLoadingConversation(true);
+    const conv = await getConversation(id);
+    setLoadingConversation(false);
+    if (conv) {
+      setConversationId(conv.id);
+      storeConversation(conv.id);
+      setMessages(fromServer(conv));
+    } else {
+      storeConversation(null);
+    }
+  }, []);
 
   useEffect(() => {
     fetchModels().then((data) => {
       setModels(data.models || []);
       setLimits(data.limits || null);
     });
+    refreshConversations();
     const stored = readStoredConversation();
-    if (stored) {
-      getConversation(stored).then((conv) => {
-        if (conv) {
-          setConversationId(conv.id);
-          setMessages(toUiMessages(conv));
-        } else {
-          storeConversation(null);
-        }
+    if (stored) openConversation(stored);
+  }, [refreshConversations, openConversation]);
+
+  const replaceMessage = (id, patch) =>
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+
+  const runTurn = async (text, images, pendingId) => {
+    setBusy(true);
+    const result = await sendMessage(text, selectedModel, images, conversationId);
+    setBusy(false);
+    if (result?.conversation_id && result.conversation_id !== conversationId) {
+      setConversationId(result.conversation_id);
+      storeConversation(result.conversation_id);
+    }
+    if (result?.success && typeof result.response === 'string') {
+      replaceMessage(pendingId, fromResult(result));
+      refreshConversations();
+    } else {
+      replaceMessage(pendingId, {
+        status: 'error',
+        error: result?.error || 'The local AI service did not return a response.',
+        retry: { text, images },
       });
     }
-  }, []);
+  };
+
+  const handleSend = (text, images = []) => {
+    if (!text.trim() || busy) return;
+    const pendingId = newId();
+    setMessages((prev) => [
+      ...prev,
+      { id: newId(), role: 'user', text, images },
+      { id: pendingId, role: 'assistant', status: 'pending' },
+    ]);
+    runTurn(text, images, pendingId);
+  };
+
+  // A failed turn is not stored by the backend, so retrying just sends it again.
+  const handleRetry = (msg) => {
+    if (busy || !msg.retry) return;
+    replaceMessage(msg.id, { status: 'pending', error: null });
+    runTurn(msg.retry.text, msg.retry.images, msg.id);
+  };
+
+  const handleRegenerate = async (msg) => {
+    if (busy || !conversationId) return;
+    const previous = { ...msg };
+    replaceMessage(msg.id, { status: 'pending', regenerateError: null });
+    setBusy(true);
+    const result = await regenerateLast(conversationId, selectedModel);
+    setBusy(false);
+    if (result?.success && typeof result.response === 'string') {
+      replaceMessage(msg.id, { ...fromResult(result), regenerateError: null });
+      refreshConversations();
+    } else {
+      // The backend keeps the previous answer when regeneration fails.
+      replaceMessage(msg.id, { ...previous, status: 'done', regenerateError: `Regenerate failed: ${result?.error || 'unknown error'}` });
+    }
+  };
 
   const handleNewChat = () => {
+    setView('chat');
+    setSidebarOpen(false);
+    if (busy) return;
     setConversationId(null);
     storeConversation(null);
     setMessages([]);
-    setError(null);
+    composerRef.current?.focus();
   };
 
-  const modelName = (id) =>
-    id === 'auto' ? 'Auto (router)' : models.find((m) => m.id === id)?.name || id;
-
-  const formatTime = () => {
-    const now = new Date();
-    return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const handleSelect = (id) => {
+    setView('chat');
+    setSidebarOpen(false);
+    if (busy || id === conversationId) return;
+    openConversation(id);
   };
 
-  const handleSendMessage = async (text, images = []) => {
-    if (!text.trim() || isLoading) return;
+  const handleRename = async (id, title) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)));
+    if (!(await renameConversation(id, title))) refreshConversations();
+  };
 
-    setError(null);
-    const userMsg = {
-      id: Date.now().toString(),
-      sender: 'user',
-      text: text,
-      time: formatTime(),
-      images,
-    };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setIsLoading(true);
-
-    try {
-      const result = await sendMessage(text, selectedModel, images, conversationId);
-      if (result?.conversation_id && result.conversation_id !== conversationId) {
-        setConversationId(result.conversation_id);
-        storeConversation(result.conversation_id);
+  const handleDelete = async (conv) => {
+    if (!window.confirm(`Delete "${conv.title || 'this conversation'}"? This also removes its images.`)) return;
+    if (await deleteConversation(conv.id)) {
+      setConversations((prev) => prev.filter((c) => c.id !== conv.id));
+      if (conv.id === conversationId) {
+        setConversationId(null);
+        storeConversation(null);
+        setMessages([]);
       }
-
-      if (result && result.success && result.response) {
-        const botMsg = {
-          id: (Date.now() + 1).toString(),
-          sender: 'bot',
-          text: result.response,
-          time: formatTime(),
-          model: result.needs_image ? null : result.ollama_model || modelName(result.model) || 'local-ollama',
-          routing: result.routing?.reason || null,
-          routingExplanation: result.routing?.explanation || null,
-          notice: result.needs_image
-            ? 'No model was called'
-            : result.ocr?.length
-              ? `Local OCR on ${result.ocr.length} image${result.ocr.length > 1 ? 's' : ''} · recognition confidence ${result.ocr
-                  .map((o) => `${Math.round(o.confidence * 100)}%`).join(', ')}`
-              : null,
-        };
-        setMessages((prev) => [...prev, botMsg]);
-      } else {
-        const errorMsg = result?.error || "Unable to get response from local AI server.";
-        setError(errorMsg);
-      }
-    } catch (err) {
-      setError(err.message || "Failed to communicate with AI chat endpoint.");
-    } finally {
-      setIsLoading(false);
     }
   };
 
-  const handleSuggestionClick = (prompt) => {
-    handleSendMessage(prompt);
+  const handleSuggestion = (s) => {
+    if (s.openDocuments) {
+      setView('documents');
+      return;
+    }
+    if (s.needsImage) {
+      composerRef.current?.setText(s.prompt);
+      composerRef.current?.openFilePicker();
+      return;
+    }
+    handleSend(s.prompt, []);
   };
 
-  return (
-    <div className="app-container">
-      <Header
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        modelName={activeTab === 'chat' && selectedModel ? modelName(selectedModel) : null}
-      />
+  const activeTitle = view === 'documents'
+    ? 'Document Assistant'
+    : conversations.find((c) => c.id === conversationId)?.title || 'New chat';
 
-      <main className="main-content">
-        {activeTab === 'chat' ? (
-          <div className="chat-layout">
+  return (
+    <div className="app-shell">
+      <Sidebar
+        view={view}
+        onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
+        conversations={conversations}
+        activeId={conversationId}
+        onSelect={handleSelect}
+        onNewChat={handleNewChat}
+        onRename={handleRename}
+        onDelete={handleDelete}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+      />
+      <div className="app-main">
+        <Header title={activeTitle} onMenu={() => setSidebarOpen(true)} />
+        {view === 'chat' ? (
+          <main className="chat-view">
             <ChatWindow
               messages={messages}
-              isLoading={isLoading}
-              error={error}
-              onSuggestionClick={handleSuggestionClick}
+              loadingConversation={loadingConversation}
+              onSuggestion={handleSuggestion}
+              onImageClick={setLightbox}
+              onRegenerate={handleRegenerate}
+              onRetry={handleRetry}
             />
-            <MessageInput
-              onSendMessage={handleSendMessage}
-              disabled={isLoading}
-              models={models}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              limits={limits}
-              onNewChat={handleNewChat}
-              hasHistory={messages.length > 0}
-            />
-          </div>
+            <div className="chat-composer-wrap">
+              <MessageInput
+                ref={composerRef}
+                onSend={handleSend}
+                busy={busy}
+                models={models}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                limits={limits}
+              />
+            </div>
+          </main>
         ) : (
-          <DocumentsPage />
+          <DocumentsPage onImageClick={setLightbox} />
         )}
-      </main>
+      </div>
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }

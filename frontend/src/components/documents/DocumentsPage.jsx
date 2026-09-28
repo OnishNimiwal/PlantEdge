@@ -4,7 +4,7 @@ import DocumentList from './DocumentList';
 import DocumentViewer from './DocumentViewer';
 import { getDocuments, getDocument, deleteDocument } from '../../api/documentApi';
 
-export default function DocumentsPage() {
+export default function DocumentsPage({ onImageClick }) {
   const [documents, setDocuments] = useState([]);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -87,6 +87,7 @@ export default function DocumentsPage() {
       {/* Right Content / Detail Panel */}
       <section className="documents-main">
         <DocumentViewer
+          onImageClick={onImageClick}
           document={selectedDoc}
           onDelete={handleDeleteDoc}
         />

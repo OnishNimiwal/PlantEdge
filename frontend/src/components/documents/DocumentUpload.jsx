@@ -111,9 +111,12 @@ export default function DocumentUpload({ onUploadSuccess }) {
 
         {isUploading ? (
           <div className="upload-state">
-            <Loader2 size={32} className="spin-icon upload-icon-spin" />
-            <p className="upload-title">Extracting text (local OCR for scans & images)...</p>
-            <p className="upload-sub">Scanned pages take ~25 s each with PaddleOCR on PC5</p>
+            <ol className="upload-steps" aria-label="Processing status">
+              <li className="is-done"><CheckCircle2 size={14} /> Uploaded</li>
+              <li className="is-active"><Loader2 size={14} className="spin-icon" /> Processing: reading text, OCR for scanned pages</li>
+              <li><span className="step-dot" /> Ready</li>
+            </ol>
+            <p className="upload-sub">Scanned pages take about 20 seconds each. You can keep this tab open.</p>
           </div>
         ) : (
           <div className="upload-state">

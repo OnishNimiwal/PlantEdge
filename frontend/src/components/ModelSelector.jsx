@@ -1,30 +1,31 @@
 import React from 'react';
-import { Cpu } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
+import { modelLabel } from '../utils/modelLabels';
+
+const CAPABILITY = { reasoning: 'General', coding: 'Coding', vision: 'Vision' };
 
 /**
- * Local-model picker. "Auto" lets the backend router choose (Step 8);
- * picking a specific model overrides the router (Step 7 manual selection).
+ * Compact model picker. "Auto" lets the backend router choose; picking a model
+ * overrides the router for the next messages.
  */
 export default function ModelSelector({ models, value, onChange, disabled }) {
   if (!models || models.length === 0) return null;
-
   return (
-    <label className="model-selector" title="Choose which local model answers">
-      <Cpu size={14} className="model-selector-icon" />
+    <label className="model-pill" title="Model: Auto lets the workbench pick the best local model">
       <select
-        className="model-select"
-        value={value || ''}
+        value={value || 'auto'}
         onChange={(e) => onChange && onChange(e.target.value)}
         disabled={disabled}
-        aria-label="Local model"
+        aria-label="Model"
       >
-        <option value="auto">Auto (router)</option>
+        <option value="auto">Auto</option>
         {models.map((m) => (
           <option key={m.id} value={m.id}>
-            {m.name} · {m.capability}
+            {modelLabel(m.id)} · {CAPABILITY[m.capability] || m.capability}
           </option>
         ))}
       </select>
+      <ChevronDown size={14} aria-hidden="true" />
     </label>
   );
 }
