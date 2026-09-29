@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     # Local apps
     'chat',
     'documents',
+    'monitoring',
 ]
 
 MIDDLEWARE = [
@@ -154,6 +155,10 @@ OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
 _think = os.getenv('OLLAMA_THINK', '').strip().lower()
 OLLAMA_THINK = {'true': True, '1': True, 'yes': True, 'false': False, '0': False, 'no': False}.get(_think)
 
+# Reliability instructions (chat/reliability.py) added to every model's system message.
+# Reduces unsupported claims; it cannot eliminate hallucinations.
+RELIABILITY_INSTRUCTIONS = os.getenv('RELIABILITY_INSTRUCTIONS', 'True').lower() in ('true', '1', 'yes')
+
 # Formatting guidance sent as the system message in General Chat (empty = none).
 # Models usually follow it, but formatting cannot be guaranteed.
 CHAT_SYSTEM_PROMPT = os.getenv('CHAT_SYSTEM_PROMPT', (
@@ -215,5 +220,6 @@ LOGGING = {
     'loggers': {
         'chat': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
         'documents': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'monitoring': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }

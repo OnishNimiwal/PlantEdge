@@ -16,6 +16,7 @@ import {
 import DocumentQuestionBox from './DocumentQuestionBox';
 import Markdown from '../LazyMarkdown';
 import CopyButton from '../CopyButton';
+import { BasisIndicator } from '../MessageBubble';
 import { modelMeta } from '../../utils/modelLabels';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
 
@@ -73,7 +74,7 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
       const res = await summarizeDocument(document.id);
       if (res && res.success && res.summary) {
         setSummary(res.summary);
-        setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason, context: res.context });
+        setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason, context: res.context, basis: res.basis });
       } else {
         setSummaryError(res?.error || "Failed to generate summary from local AI.");
       }
@@ -268,6 +269,7 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
                     {summaryMeta.context.document_chars.toLocaleString()} characters (model context window limit).
                   </span>
                 )}
+                <BasisIndicator basis={summaryMeta?.basis} />
                 <div className="summary-content" ref={summaryRef}>
                   <Markdown text={summary} />
                 </div>

@@ -170,7 +170,8 @@ class DocumentAskStreamView(APIView):
             return Response({"success": False, "error": "There is no answer to regenerate."},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
-            opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"])
+            opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"],
+                                                usage=prepared["usage"])
         except ModelManagerError as exc:
             return Response({"success": False, "error": exc.public_message},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)

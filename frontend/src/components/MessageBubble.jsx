@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus } from 'lucide-react';
+import { RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus, CheckCircle2, Info } from 'lucide-react';
 import Markdown from './LazyMarkdown';
 import CopyButton from './CopyButton';
 import { modelMeta } from '../utils/modelLabels';
@@ -14,6 +14,27 @@ import { modelMeta } from '../utils/modelLabels';
  * }
  * 'streaming' renders like 'done' with a cursor, so token streaming can be added later.
  */
+/**
+ * What the answer was based on (document / image / OCR text / general knowledge / code).
+ * Set by the backend from what the model actually received; it is not a correctness score.
+ */
+export function BasisIndicator({ basis }) {
+  if (!basis?.label) return null;
+  const grounded = ['document', 'image', 'image_text'].includes(basis.type);
+  const Icon = basis.undetermined ? AlertTriangle : grounded ? CheckCircle2 : Info;
+  const tone = basis.undetermined ? 'is-warn' : grounded ? 'is-grounded' : 'is-info';
+  return (
+    <div
+      className={`basis ${tone}`}
+      title="Shows what this answer was based on. It does not guarantee that the answer is correct."
+    >
+      <Icon size={13} aria-hidden="true" />
+      <span>{basis.label}</span>
+      {basis.detail && <span className="basis-detail">· {basis.detail}</span>}
+    </div>
+  );
+}
+
 export default function MessageBubble({ message, onImageClick, onRegenerate, onRetry, canRegenerate }) {
   const bodyRef = useRef(null);
 
@@ -85,6 +106,7 @@ export default function MessageBubble({ message, onImageClick, onRegenerate, onR
           </div>
         ) : (
           <>
+            {!message.info && status === 'done' && <BasisIndicator basis={message.basis} />}
             <div className="msg-body" ref={bodyRef}>
               {message.info ? (
                 <div className="msg-notice">

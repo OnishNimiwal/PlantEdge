@@ -10,6 +10,7 @@ urlpatterns = [
     path("api/chat/", include("chat.urls")),
     path("api/models/", ModelListAPIView.as_view(), name="models"),
     path("api/documents/", include("documents.urls")),
+    path("api/dashboard/", include("monitoring.urls")),
 ]
 
 if settings.DEBUG:

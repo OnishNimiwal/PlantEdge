@@ -6,6 +6,7 @@ import MessageInput from './components/MessageInput';
 import ImageLightbox from './components/ImageLightbox';
 // Loaded on demand to keep the initial bundle small.
 const DocumentsPage = lazy(() => import('./components/documents/DocumentsPage'));
+const DashboardPage = lazy(() => import('./components/dashboard/DashboardPage'));
 import {
   streamMessage, fetchModels, getConversation, listConversations,
   renameConversation, deleteConversation,
@@ -68,6 +69,7 @@ function fromServer(conv) {
     model: m.role === 'assistant' ? m.model : null,
     routing: m.role === 'assistant' ? m.routing_reason : null,
     info: m.role === 'assistant' && !m.model && m.routing_reason === 'vision',
+    basis: m.basis || null,
     status: 'done',
   }));
 }
@@ -82,6 +84,7 @@ function fromResult(result) {
     routingExplanation: result.routing?.explanation,
     info: Boolean(result.needs_image),
     ocr: result.ocr || null,
+    basis: result.basis || null,
     footnotes: ocrFootnote(result),
     status: 'done',
   };
@@ -311,7 +314,9 @@ export default function App() {
 
   const activeTitle = view === 'documents'
     ? 'Document Assistant'
-    : conversations.find((c) => c.id === conversationId)?.title || 'New chat';
+    : view === 'dashboard'
+      ? 'Dashboard'
+      : conversations.find((c) => c.id === conversationId)?.title || 'New chat';
   const sidebarActiveId = view === 'documents' ? docRequest?.conversationId : conversationId;
 
   return (
@@ -360,6 +365,12 @@ export default function App() {
                 limits={limits}
               />
             </div>
+          </main>
+        ) : view === 'dashboard' ? (
+          <main className="docs-view">
+            <Suspense fallback={<div className="chat-loading">Loading dashboard…</div>}>
+              <DashboardPage />
+            </Suspense>
           </main>
         ) : (
           <main className="docs-view">

@@ -147,7 +147,19 @@ class ModelManager:
             extra["think"] = think
         return extra
 
-    def generate(self, model_id=None, prompt="", images=None) -> dict:
+    def _run_recorded(self, model, usage, fn):
+        """Run fn() and record one usage row (success or failure) for dashboards."""
+        from monitoring.usage import record
+        started = time.monotonic()
+        try:
+            data, duration = fn()
+        except ModelManagerError as exc:
+            record(model, usage, False, int((time.monotonic() - started) * 1000), error=exc)
+            raise
+        record(model, usage, True, duration)
+        return data, duration
+
+    def generate(self, model_id=None, prompt="", images=None, usage=None) -> dict:
         """
         Run a single non-streaming generation on a registered local model.
 
@@ -169,9 +181,9 @@ class ModelManager:
             if not model.supports_images:
                 raise ModelRequestError(f"Model '{model.id}' does not accept images.")
             payload["images"] = images
-        data, duration = self._post(
+        data, duration = self._run_recorded(model, usage, lambda: self._post(
             "/api/generate", payload, model, len(prompt), len(images or [])
-        )
+        ))
         return {
             "response": (data.get("response") or "").strip(),
             "model": model.id,
@@ -180,7 +192,7 @@ class ModelManager:
             "context_overflow": estimate_tokens(prompt, len(images or [])) > context_window(model),
         }
 
-    def chat(self, model_id, messages) -> dict:
+    def chat(self, model_id, messages, usage=None) -> dict:
         """
         Multi-turn generation via Ollama /api/chat.
 
@@ -200,7 +212,9 @@ class ModelManager:
             **self._options(model),
         }
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
-        data, duration = self._post("/api/chat", payload, model, prompt_chars, image_count)
+        data, duration = self._run_recorded(
+            model, usage, lambda: self._post("/api/chat", payload, model, prompt_chars, image_count)
+        )
         return {
             "response": ((data.get("message") or {}).get("content") or "").strip(),
             "model": model.id,
@@ -210,7 +224,7 @@ class ModelManager:
             > context_window(model),
         }
 
-    def chat_stream(self, model_id, messages) -> "ChatStream":
+    def chat_stream(self, model_id, messages, usage=None) -> "ChatStream":
         """
         Streaming variant of chat(). The HTTP request to Ollama is made here, so
         connection / missing-model / GPU errors raise immediately (before any output
@@ -228,8 +242,13 @@ class ModelManager:
             **self._options(model),
         }
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
-        response, started = self._send("/api/chat", payload, model, prompt_chars, image_count, stream=True)
-        return ChatStream(model, response, started)
+        try:
+            response, started = self._send("/api/chat", payload, model, prompt_chars, image_count, stream=True)
+        except ModelManagerError as exc:
+            from monitoring.usage import record
+            record(model, usage, False, error=exc, streamed=True)
+            raise
+        return ChatStream(model, response, started, usage)
 
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
         response, started = self._send(endpoint, payload, model, prompt_chars, image_count)
@@ -303,6 +322,10 @@ class ModelManager:
         return response, started
 
 
+class ClientDisconnected(Exception):
+    """Recorded (not raised) when the browser closes a stream before it completes."""
+
+
 class ChatStream:
     """
     Iterates an Ollama /api/chat stream as events:
@@ -312,13 +335,18 @@ class ChatStream:
     Raises ModelManagerError if the stream breaks.
     """
 
-    def __init__(self, model, response, started):
-        self.model, self.response, self.started = model, response, started
+    def __init__(self, model, response, started, usage=None):
+        self.model, self.response, self.started, self.usage = model, response, started, usage
+
+    def _record(self, success, error=None):
+        from monitoring.usage import record
+        record(self.model, self.usage, success, int((time.monotonic() - self.started) * 1000),
+               error=error, streamed=True)
 
     def __iter__(self):
         import json
 
-        parts, thinking_sent = [], False
+        parts, thinking_sent, finished = [], False, False
         try:
             for line in self.response.iter_lines():
                 if not line:
@@ -344,26 +372,41 @@ class ChatStream:
                         "Inference success (stream): model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
                         self.model.id, duration, chunk.get("prompt_eval_count"), chunk.get("eval_count"),
                     )
+                    finished = True
+                    self._record(True)
                     yield {"type": "done", "response": "".join(parts).strip(), "model": self.model.id,
                            "ollama_model": self.model.ollama_name, "duration_ms": duration}
                     return
+            finished = True
+            self._record(False, ModelRequestError())
+            raise ModelRequestError()  # stream ended without "done"
         except requests.exceptions.RequestException as exc:
             logger.error("Stream interrupted: model=%s (%s)", self.model.id, exc.__class__.__name__)
+            finished = True
+            self._record(False, ModelUnavailableError())
             raise ModelUnavailableError() from exc
+        except ModelManagerError as exc:
+            if not finished:
+                finished = True
+                self._record(False, exc)
+            raise
         finally:
+            if not finished:  # client went away mid-stream (GeneratorExit)
+                self._record(False, ClientDisconnected())
             self.response.close()
-        raise ModelRequestError()  # stream ended without "done"
 
 
-def generate_response(model: str, prompt: str = None, images=None, messages=None) -> dict:
+def generate_response(model: str, prompt: str = None, images=None, messages=None, usage=None) -> dict:
     """
     Execution-layer entry point: run a request on the model chosen by the router.
 
     `model` is the router's Ollama tag (e.g. "qwen2.5-coder:7b") or a registry id.
     Either a single `prompt` (+ optional `images`) or a list of chat `messages`
     (conversation history built by chat/context.py).
+    `usage` = {"reason": <router reason>, "source": "chat"|"document"|"summary"} records one
+    dashboard row (metadata only); None records nothing.
     Returns {"response", "model", "ollama_model", "duration_ms", "context_overflow"}.
     """
     if messages is not None:
-        return ModelManager().chat(model, messages)
-    return ModelManager().generate(model, prompt or "", images=images)
+        return ModelManager().chat(model, messages, usage=usage)
+    return ModelManager().generate(model, prompt or "", images=images, usage=usage)

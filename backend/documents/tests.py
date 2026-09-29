@@ -650,3 +650,33 @@ class DocumentStreamRegenerateTests(APITestCase):
         msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv_id})).data["conversation"]["messages"]
         self.assertEqual([m["content"] for m in msgs], ["What was found?", "second"])
         self.assertEqual(self.client.post(url, {"regenerate": True}, format="json").status_code, 400)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class DocumentReliabilityTests(APITestCase):
+    @patch("chat.model_manager.requests.Session.post")
+    def test_document_grounding_prompt_and_basis(self, mock_post):
+        doc = Document.objects.create(original_name="plant.txt", file_type="TXT",
+                                      extracted_text="Project location: Jaipur\nMaximum operating temperature: 120°C")
+        mock_post.return_value = ok_response("I could not find this information in the provided document.")
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "What is the project budget?"}, format="json")
+        system = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("Answer only from the supplied document content", system)
+        self.assertIn("Maximum operating temperature: 120°C", system)
+        self.assertEqual(r.data["basis"]["label"], "Not found in the provided document")
+        mock_post.return_value = ok_response("The maximum operating temperature is 120°C.")
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "What is the maximum operating temperature?"}, format="json")
+        self.assertEqual((r.data["basis"]["label"], r.data["basis"]["detail"]), ("Based on uploaded document", "plant.txt"))
+
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("A title block."))
+    def test_visual_basis_names_the_pages_actually_sent(self, mock_post):
+        doc = Document.objects.create(
+            original_name="scan.pdf", file_type="PDF", extraction_method="ocr", extracted_text="x" * 30,
+            page_count=3, file=SimpleUploadedFile("scan.pdf", make_scanned_pdf_bytes(pages=3)),
+        )
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "What does the drawing on page 2 show?"}, format="json")
+        self.assertEqual(r.data["basis"]["detail"], "scan.pdf — page 2 (image)")
+        self.assertIn("Observed", mock_post.call_args.kwargs["json"]["messages"][0]["content"])

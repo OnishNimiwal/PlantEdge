@@ -46,6 +46,7 @@ export default function DocumentQuestionBox({
         id: newId(), role: m.role, text: m.content, status: 'done',
         model: m.role === 'assistant' ? m.model : null,
         routing: m.role === 'assistant' ? m.routing_reason : null,
+        basis: m.basis || null,
       })));
     });
     return () => { cancelled = true; };
@@ -81,6 +82,7 @@ export default function DocumentQuestionBox({
       replace(msgId, {
         status: 'done', text: final.answer, model: final.ollama_model, routing: final.routing?.reason,
         routingExplanation: final.routing?.explanation, footnotes: footnotes(final), regenerateError: null,
+        basis: final.basis || null,
       });
       onConversationsChanged?.();
     } else if (previous) {

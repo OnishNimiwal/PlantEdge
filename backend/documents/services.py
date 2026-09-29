@@ -20,6 +20,7 @@ from chat.model_manager import (
 from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISION
 from chat.model_registry import get_model
 from chat import context as chat_context
+from chat import reliability
 from . import processing
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,9 @@ def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
     return text, info
 
 
-def _run(model: str, prompt: str, images=None) -> dict:
+def _run(model: str, prompt: str, images=None, usage=None) -> dict:
     try:
-        return generate_response(model, prompt, images=images)
+        return generate_response(model, prompt, images=images, usage=usage)
     except ModelManagerError as exc:
         raise OllamaServiceError(exc.public_message) from exc
 
@@ -115,13 +116,16 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
         )
         # Text + visual: give the vision model the extracted text too (helps read labels).
         excerpt = document.extracted_text[:3000]
-        system = (
-            f"You are an on-premise local AI assistant. The attached image(s) show {where} "
-            f"'{document.original_name}'. Answer the user's questions based on what you can see; "
-            "only the attached pages are visible to you. " + FORMAT_HINT + "\n"
-            "Text extracted from the document (may help read labels; may contain OCR errors):\n"
-            f"{excerpt}"
+        system = reliability.system_prompt(
+            "vision",
+            f"The attached image(s) show {where} '{document.original_name}'. Only the attached pages "
+            "are visible to you.",
+            FORMAT_HINT,
+            "Text extracted from the document (may help read labels; may contain OCR errors):\n" + excerpt,
         )
+        pages_label = (f"page{'s' if len(vision_pages) > 1 else ''} {', '.join(map(str, vision_pages))} (image)"
+                       if document.file_type == "PDF" else "image")
+        basis_detail = f"{document.original_name} — {pages_label}"
     else:
         # Leave a quarter of the budget for conversation history.
         history_reserve = int(prompt_budget_tokens(get_model(decision["model"])) * CHARS_PER_TOKEN) // 4
@@ -129,16 +133,15 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             document.extracted_text, decision["model"],
             reserved_chars=1500 + len(question) + history_reserve,
         )
-        system = (
-            f"You are an on-premise local AI assistant analyzing the document '{document.original_name}'.\n"
-            "Answer the user's questions thoroughly and accurately based on the provided document content.\n"
-            "If the answer cannot be determined from the document, clearly mention that.\n"
-            f"{FORMAT_HINT}\n"
-            f"{_ocr_note(document)}\n"
-            "=== DOCUMENT CONTENT ===\n"
-            f"{doc_text}\n"
-            "=== END DOCUMENT CONTENT ==="
+        system = reliability.system_prompt(
+            "document",
+            f"You are analyzing the document '{document.original_name}'. Answer the user's questions "
+            "thoroughly and accurately from the document content below.",
+            FORMAT_HINT,
+            _ocr_note(document),
+            f"=== DOCUMENT CONTENT ===\n{doc_text}\n=== END DOCUMENT CONTENT ===",
         )
+        basis_detail = document.original_name
 
     messages, history_info = chat_context.build_messages(
         conv, question, decision["model"], new_images=images, system=system, exclude_ids=replaced_ids,
@@ -150,7 +153,8 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     )
     return {
         "conv": conv, "question": question, "decision": decision, "messages": messages,
-        "replaced_ids": replaced_ids, "document": document,
+        "replaced_ids": replaced_ids, "document": document, "basis_detail": basis_detail,
+        "usage": {"reason": decision["reason"], "source": "document"},
         "meta": {
             "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
             "context": {**context_info, **history_info},
@@ -164,14 +168,17 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
 
 def finish_document_question(prepared, result) -> dict:
     """Record the exchange and build the response body."""
+    basis = reliability.basis("document", result["response"], prepared["basis_detail"])
     chat_context.discard(prepared["replaced_ids"])
     # The document image is re-rendered on demand, so it is not stored as an attachment.
     chat_context.record_turn(prepared["conv"], prepared["question"], result["response"],
-                             model_tag=result["ollama_model"], reason=prepared["decision"]["reason"])
+                             model_tag=result["ollama_model"], reason=prepared["decision"]["reason"],
+                             basis=basis)
     return {
         "answer": result["response"],
         "model": result["model"],
         "ollama_model": result["ollama_model"],
+        "basis": basis,
         **prepared["meta"],
     }
 
@@ -184,7 +191,8 @@ def ask_document_question(document, question=None, conversation_id=None, regener
     """
     prepared = prepare_document_question(document, question, conversation_id, regenerate)
     try:
-        result = generate_response(prepared["decision"]["model"], messages=prepared["messages"])
+        result = generate_response(prepared["decision"]["model"], messages=prepared["messages"],
+                                   usage=prepared["usage"])
     except ModelManagerError as exc:
         raise OllamaServiceError(exc.public_message) from exc
     return finish_document_question(prepared, result)
@@ -198,8 +206,10 @@ def summarize_document(document) -> dict:
     model = get_model(ROUTE_TARGETS[REASON_GENERAL])
     doc_text, context_info = fit_to_context(document.extracted_text, model.id, reserved_chars=1500)
     prompt = (
-        f"You are an on-premise local AI assistant analyzing the document '{document.original_name}'.\n"
-        "Generate a structured, professional summary of this document.\n"
+        f"{reliability.instruction('document')}\n\n"
+        f"You are analyzing the document '{document.original_name}'.\n"
+        "Generate a structured, professional summary of this document. Include only what the document "
+        "states; do not add facts, values or conclusions that are not in it.\n"
         "Include:\n"
         "1. Executive Overview\n"
         "2. Key Points & Findings\n"
@@ -215,9 +225,10 @@ def summarize_document(document) -> dict:
         "Document summary: doc_id=%s method=%s model=%s",
         document.id, document.extraction_method, model.ollama_name,
     )
-    result = _run(model.ollama_name, prompt)
+    result = _run(model.ollama_name, prompt, usage={"reason": REASON_GENERAL, "source": "summary"})
     return {
         "summary": result["response"],
+        "basis": reliability.basis("document", result["response"], document.original_name),
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "routing": {"mode": "fixed", "reason": REASON_GENERAL},

@@ -23,6 +23,7 @@ from .model_manager import (
 )
 from .router import route_model, REASON_OCR_TEXT
 from . import context as ctx
+from . import reliability
 from documents import processing
 from .models import Conversation
 
@@ -126,7 +127,12 @@ def prepare_turn(data, image_info):
         if selection["reason"] == REASON_OCR_TEXT:
             images_for_model = None  # the text model reasons over the OCR text only
 
-    system = getattr(settings, "CHAT_SYSTEM_PROMPT", "") or None
+    # Reliability instructions for this kind of request + formatting guidance.
+    model_obj = get_model(selection["model"])
+    mode = reliability.mode_for(
+        selection["reason"], model_obj, bool(images_for_model) or signals.get("image_available", False),
+    )
+    system = reliability.system_prompt(mode, getattr(settings, "CHAT_SYSTEM_PROMPT", "")) or None
     messages, context_info = ctx.build_messages(
         conv, data["message"], selection["model"], new_images=images_for_model,
         extra_context=extra_context, exclude_ids=replaced_ids, system=system,
@@ -136,16 +142,22 @@ def prepare_turn(data, image_info):
         "routing": routing, "messages": messages, "context_info": context_info,
         "extra_context": extra_context, "ocr_info": ocr_info, "image_info": image_info,
         "replaced_ids": replaced_ids,
+        "basis_kind": reliability.chat_basis_kind(
+            selection["reason"], any(m.get("images") for m in messages), bool(extra_context), model_obj,
+        ),
+        "usage": {"reason": selection["reason"], "source": "chat"},
     }
 
 
 def finish_turn(turn, result):
     """Persist the exchange (replacing a regenerated turn) and build the response body."""
+    detail = "with OCR text" if turn["basis_kind"] == "image" and turn["extra_context"] else ""
+    basis = reliability.basis(turn["basis_kind"], result["response"], detail)
     ctx.discard(turn["replaced_ids"])
     ctx.record_turn(
         turn["conv"], turn["data"]["message"], result["response"], model_tag=result["ollama_model"],
         reason=turn["selection"]["reason"], images=turn["data"].get("images"),
-        image_info=turn["image_info"], extra_context=turn["extra_context"],
+        image_info=turn["image_info"], extra_context=turn["extra_context"], basis=basis,
     )
     return {
         "success": True,
@@ -155,6 +167,7 @@ def finish_turn(turn, result):
         "ollama_model": result["ollama_model"],
         "routing": turn["routing"],
         "context": turn["context_info"],
+        "basis": basis,
         "ocr": turn["ocr_info"],
         "duration_ms": result["duration_ms"],
         "images": turn["image_info"],
@@ -184,7 +197,7 @@ class ChatAPIView(APIView):
             return early
         try:
             # Execution: the execution layer decides HOW to call it (local Ollama only).
-            result = generate_response(turn["selection"]["model"], messages=turn["messages"])
+            result = generate_response(turn["selection"]["model"], messages=turn["messages"], usage=turn["usage"])
         except Exception as exc:
             return _model_error(exc, turn)
         return Response(finish_turn(turn, result))
@@ -249,7 +262,7 @@ class ChatStreamAPIView(APIView):
         if early is not None:
             return early
         try:
-            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"])
+            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"], usage=turn["usage"])
         except Exception as exc:
             return _model_error(exc, turn)
         meta = {"conversation_id": str(turn["conv"].id), "routing": turn["routing"],
@@ -291,7 +304,8 @@ class ConversationListAPIView(APIView):
     """
 
     def get(self, request):
-        qs = Conversation.objects.select_related("document")
+        # Conversations whose first message failed have no stored turns; don't list them.
+        qs = Conversation.objects.select_related("document").filter(messages__isnull=False).distinct()
         doc = request.query_params.get("document")
         if doc:
             qs = qs.filter(document_id=doc)

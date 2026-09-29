@@ -23,11 +23,15 @@ class Command(BaseCommand):
         parser.add_argument("--conversations", action="store_true",
                             help="Clean up chat conversations (and their images) instead of documents; "
                                  "supports --older-than, --ids (UUIDs) and --all")
+        parser.add_argument("--usage", action="store_true",
+                            help="Reset dashboard usage records (metadata only); supports --older-than and --all")
         parser.add_argument("--yes", action="store_true", help="Actually delete (otherwise dry run)")
 
     def handle(self, *args, **opts):
         if opts["conversations"]:
             return self._conversations(opts)
+        if opts["usage"]:
+            return self._usage(opts)
         qs = Document.objects.all()
         if not (opts["name"] or opts["ids"] or opts["older_than"] is not None or opts["all"]):
             raise CommandError("Give a filter (--name, --ids, --older-than) or --all.")
@@ -80,3 +84,19 @@ class Command(BaseCommand):
         for c in convs:
             c.delete()  # cascades to messages and attachments (image files removed by signal)
         self.stdout.write(self.style.SUCCESS(f"Deleted {len(convs)} conversation(s)."))
+
+    def _usage(self, opts):
+        from monitoring.models import UsageRecord
+        if not (opts["older_than"] is not None or opts["all"]):
+            raise CommandError("Give --older-than or --all together with --usage.")
+        qs = UsageRecord.objects.all()
+        if opts["older_than"] is not None:
+            qs = qs.filter(created_at__lt=timezone.now() - timedelta(days=opts["older_than"]))
+        count = qs.count()
+        if not opts["yes"]:
+            self.stdout.write(self.style.WARNING(
+                f"Dry run: {count} usage record(s) would be deleted. Re-run with --yes to delete."
+            ))
+            return
+        qs.delete()
+        self.stdout.write(self.style.SUCCESS(f"Deleted {count} usage record(s)."))

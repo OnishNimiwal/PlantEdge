@@ -35,7 +35,7 @@ def setUpModule():
     global _media_override
     # Formatting system prompt is tested separately; off here so message lists stay exact.
     _media_override = override_settings(MEDIA_ROOT=_tempfile.mkdtemp(prefix="mrpl-chat-test-"),
-                                        CHAT_SYSTEM_PROMPT="")
+                                        CHAT_SYSTEM_PROMPT="", RELIABILITY_INSTRUCTIONS=False)
     _media_override.enable()
 
 
@@ -845,9 +845,10 @@ class ConversationManagementTests(APITestCase):
         self.assertEqual(r.status_code, 400)
 
     def test_list_returns_up_to_50(self):
-        from .models import Conversation
+        from .models import Conversation, ChatMessage
         for i in range(55):
-            Conversation.objects.create(title=f"c{i}")
+            c = Conversation.objects.create(title=f"c{i}")
+            ChatMessage.objects.create(conversation=c, role="user", content="x")
         self.assertEqual(len(self.client.get(reverse("conversation-list")).data["conversations"]), 50)
 
 
@@ -934,8 +935,9 @@ class StreamingAndSearchTests(APITestCase):
         from documents.models import Document
         from .models import Conversation
         doc = Document.objects.create(original_name="report.pdf", file_type="PDF", extracted_text="x")
-        Conversation.objects.create(title="chat one")
-        Conversation.objects.create(title="doc q", document=doc)
+        from .models import ChatMessage
+        for conv in (Conversation.objects.create(title="chat one"), Conversation.objects.create(title="doc q", document=doc)):
+            ChatMessage.objects.create(conversation=conv, role="user", content="x")
         url = reverse("conversation-list")
         self.assertEqual([c["title"] for c in self.client.get(url).data["conversations"]], ["chat one"])
         both = self.client.get(url, {"scope": "all"}).data["conversations"]
@@ -965,3 +967,71 @@ class StreamNegotiationTests(APITestCase):
                              HTTP_ACCEPT="application/x-ndjson")
         self.assertEqual(r.status_code, 503)  # JSON error, not 406
         self.assertEqual(r["Content-Type"], "application/json")
+
+
+class ReliabilityTests(APITestCase):
+    """Hallucination-reduction layer: instructions per mode, basis indicator."""
+
+    @override_settings(RELIABILITY_INSTRUCTIONS=True)
+    def test_modes_and_instructions(self):
+        from . import reliability as rel
+        from .model_registry import get_model
+        self.assertEqual(rel.mode_for("coding"), "coding")
+        self.assertEqual(rel.mode_for("vision_ocr"), "vision")
+        self.assertEqual(rel.mode_for("ocr_text"), "image_text")
+        self.assertEqual(rel.mode_for("manual", get_model("qwen-coder")), "coding")
+        self.assertEqual(rel.mode_for("manual", get_model("qwen-vl"), has_images=False), "vision")
+        self.assertIn("never say or imply that code was executed", rel.instruction("coding"))
+        self.assertIn("Observed", rel.instruction("vision"))
+        self.assertIn(rel.NOT_IN_DOCUMENT, rel.instruction("document"))
+        self.assertIn("do not refuse ordinary questions", rel.instruction("general"))
+        with override_settings(RELIABILITY_INSTRUCTIONS=False):
+            self.assertEqual(rel.instruction("coding"), "")
+
+    def test_undetermined_detection(self):
+        from .reliability import basis
+        self.assertTrue(basis("document", "I could not find this information in the provided document.")["undetermined"])
+        self.assertTrue(basis("image", "This cannot be determined from the provided image.")["undetermined"])
+        self.assertTrue(basis("document", "The document does not specify the project budget.")["undetermined"])
+        ok = basis("document", "The maximum operating temperature is 120°C.")
+        self.assertEqual((ok["undetermined"], ok["label"]), (False, "Based on uploaded document"))
+        long = "Answer: 120°C. " + "More detail. " * 40 + "The serial number cannot be determined."
+        self.assertFalse(basis("document", long)["undetermined"])  # only the opening is checked
+        self.assertFalse(basis("general", "I don't have enough information.")["undetermined"])  # not grounded
+
+    @override_settings(RELIABILITY_INSTRUCTIONS=True)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_chat_basis_and_system_prompt_per_route(self, mock_post):
+        mock_post.return_value = ollama_ok("def f(): ...")
+        r = self.client.post(reverse("chat"), {"message": "Write a Python function to add two numbers."}, format="json")
+        self.assertEqual(r.data["basis"]["type"], "code")
+        system = mock_post.call_args.kwargs["json"]["messages"][0]
+        self.assertEqual(system["role"], "system")
+        self.assertIn("never say or imply that code was executed", system["content"])
+        mock_post.return_value = ollama_ok("**Observed** a red square.")
+        r = self.client.post(reverse("chat"), {"message": "Describe this image.", "images": [PNG_B64]}, format="json")
+        self.assertEqual(r.data["basis"]["label"], "Based on provided image")
+        self.assertIn("Observed", mock_post.call_args.kwargs["json"]["messages"][0]["content"])
+        mock_post.return_value = ollama_ok("Federated learning is ...")
+        r = self.client.post(reverse("chat"), {"message": "What is federated learning?"}, format="json")
+        self.assertEqual(r.data["basis"]["label"], "General AI response")
+        conv = self.client.get(reverse("conversation-detail", kwargs={"pk": r.data["conversation_id"]}))
+        self.assertEqual(conv.data["conversation"]["messages"][1]["basis"]["type"], "general")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_ocr_text_basis(self, mock_post):
+        mock_post.return_value = ollama_ok("I could not find this information in the provided document.")
+        with patch("documents.ocr.ocr_image", return_value={"text": "Tag: E-2104A", "lines": 1,
+                                                             "confidence": 0.99, "complex_layout": False}):
+            r = self.client.post(reverse("chat"), {"message": "Summarize this inspection report.",
+                                                   "images": [PNG_B64]}, format="json")
+        self.assertEqual(r.data["basis"]["type"], "image_text")
+        self.assertTrue(r.data["basis"]["undetermined"])
+
+
+class EmptyConversationListTests(APITestCase):
+    @patch("chat.model_manager.requests.Session.post")
+    def test_failed_first_message_leaves_no_listed_conversation(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        self.assertEqual(self.client.get(reverse("conversation-list")).data["conversations"], [])

@@ -167,7 +167,7 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
 
 
 def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images=None, image_info=None,
-                extra_context=""):
+                extra_context="", basis=None):
     """Persist one user/assistant exchange (and the user's prepared images)."""
     user_msg = ChatMessage.objects.create(
         conversation=conv, role=ChatMessage.ROLE_USER, content=user_text, extra_context=extra_context or "",
@@ -180,10 +180,20 @@ def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images
     ChatMessage.objects.create(
         conversation=conv, role=ChatMessage.ROLE_ASSISTANT, content=assistant_text,
         model=model_tag or "", routing_reason=reason or "",
+        basis=(basis or {}).get("type", ""), basis_detail=(basis or {}).get("detail", ""),
+        basis_undetermined=bool((basis or {}).get("undetermined")),
     )
     if not conv.title:
         conv.title = user_text.strip().splitlines()[0][:80] if user_text.strip() else "Conversation"
     conv.save()  # bumps updated_at
+
+
+def _basis_out(m):
+    if m.role != ChatMessage.ROLE_ASSISTANT or not m.basis:
+        return None
+    from .reliability import LABELS, UNDETERMINED_LABELS
+    label = UNDETERMINED_LABELS.get(m.basis) if m.basis_undetermined else LABELS.get(m.basis)
+    return {"type": m.basis, "label": label or "", "detail": m.basis_detail, "undetermined": m.basis_undetermined}
 
 
 def serialize(conv) -> dict:
@@ -198,6 +208,7 @@ def serialize(conv) -> dict:
                 "content": m.content,
                 "model": m.model or None,
                 "routing_reason": m.routing_reason or None,
+                "basis": _basis_out(m),
                 "images": [a.file.url for a in m.attachments.all()],
                 "created_at": m.created_at,
             }

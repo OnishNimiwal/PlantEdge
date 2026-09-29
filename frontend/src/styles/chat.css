@@ -786,3 +786,38 @@
   .chat-empty { padding-top: 6vh; }
 }
 .markdown-fallback { white-space: pre-wrap; }
+
+/* ---- Answer basis indicator (reliability layer) ---- */
+.basis {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0 0 0.45rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  line-height: 1.6;
+  border: 1px solid transparent;
+}
+
+.basis.is-grounded {
+  background: var(--badge-green-bg);
+  color: var(--badge-green-text);
+  border-color: var(--badge-green-border);
+}
+
+.basis.is-info {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}
+
+.basis.is-warn {
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  border-color: var(--badge-amber-border);
+}
+
+.basis-detail {
+  opacity: 0.9;
+}

@@ -43,6 +43,11 @@ class ChatMessage(models.Model):
     # Model-only context stored with a user turn (e.g. OCR text of its images);
     # sent to models with the history, not shown in the UI.
     extra_context = models.TextField(blank=True)
+    # What an assistant answer was based on (see chat/reliability.py): document | image |
+    # image_text | general | code. Derived from the inputs, not a correctness guarantee.
+    basis = models.CharField(max_length=20, blank=True)
+    basis_detail = models.CharField(max_length=255, blank=True)
+    basis_undetermined = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

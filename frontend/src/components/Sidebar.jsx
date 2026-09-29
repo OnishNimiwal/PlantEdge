@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   SquarePen, MessageSquare, FileText, Search, Pencil, Trash2, Check, X, ShieldCheck, PanelLeftClose,
-  Sun, Moon, Monitor,
+  Sun, Moon, Monitor, LayoutDashboard,
 } from 'lucide-react';
 
 const THEME_NEXT = { system: 'light', light: 'dark', dark: 'system' };
@@ -144,6 +144,13 @@ export default function Sidebar({
             onClick={() => onViewChange('documents')}
           >
             <FileText size={16} /> Document Assistant
+          </button>
+          <button
+            type="button"
+            className={`nav-item ${view === 'dashboard' ? 'is-active' : ''}`}
+            onClick={() => onViewChange('dashboard')}
+          >
+            <LayoutDashboard size={16} /> Dashboard
           </button>
         </nav>
 
