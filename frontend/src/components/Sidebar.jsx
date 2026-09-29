@@ -88,7 +88,7 @@ function ConversationItem({ conv, active, onSelect, onRename, onDelete }) {
 
 export default function Sidebar({
   view, onViewChange, conversations, activeId, onSelect, onNewChat, onRename, onDelete, open, onClose,
-  onSearch, theme, onThemeChange,
+  onSearch, theme, onThemeChange, collapsed,
 }) {
   const [query, setQuery] = useState('');
   // Server-side search over titles and message text (debounced).
@@ -102,14 +102,25 @@ export default function Sidebar({
   return (
     <>
       <div className={`sidebar-scrim ${open ? 'is-open' : ''}`} onClick={onClose} aria-hidden="true" />
-      <aside className={`sidebar ${open ? 'is-open' : ''}`} aria-label="Navigation">
+      <aside
+        className={`sidebar ${open ? 'is-open' : ''} ${collapsed ? 'is-collapsed' : ''}`}
+        aria-label="Navigation"
+        aria-hidden={(collapsed && !open) || undefined}
+      >
         <div className="sidebar-brand">
           <div className="brand-mark" aria-hidden="true">M</div>
           <div className="brand-text">
             <span className="brand-name">MRPL Local AI</span>
             <span className="brand-sub">Sovereign AI Workbench</span>
           </div>
-          <button type="button" className="icon-btn sidebar-close" onClick={onClose} aria-label="Close sidebar">
+          <button
+            type="button"
+            className="icon-btn sidebar-close"
+            onClick={onClose}
+            aria-label="Close sidebar"
+            aria-expanded="true"
+            title="Close sidebar (Ctrl+Shift+S)"
+          >
             <PanelLeftClose size={18} />
           </button>
         </div>

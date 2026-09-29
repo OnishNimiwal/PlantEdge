@@ -13,6 +13,16 @@ import {
 
 const CONVERSATION_KEY = 'mrpl.chat.conversationId';
 const THEME_KEY = 'mrpl.theme';
+const SIDEBAR_KEY = 'mrpl.sidebar.collapsed';
+const MOBILE_QUERY = '(max-width: 860px)';
+
+function readSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function readTheme() {
   try {
@@ -79,7 +89,8 @@ function fromResult(result) {
 
 export default function App() {
   const [view, setView] = useState('chat'); // 'chat' | 'documents'
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);          // small screens: off-canvas
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed); // desktop
 
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -99,6 +110,33 @@ export default function App() {
   const refreshConversations = useCallback(() => {
     listConversations(searchRef.current).then(setConversations);
   }, []);
+
+  // One toggle for both layouts: collapse/expand on desktop, open/close the drawer on small screens.
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia?.(MOBILE_QUERY).matches) {
+      setSidebarOpen((v) => !v);
+      return;
+    }
+    setSidebarCollapsed((v) => {
+      try {
+        localStorage.setItem(SIDEBAR_KEY, v ? '0' : '1');
+      } catch {
+        /* per-browser convenience only */
+      }
+      return !v;
+    });
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        toggleSidebar();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleSidebar]);
 
   const handleSearch = useCallback((q) => {
     searchRef.current = q;
@@ -277,7 +315,7 @@ export default function App() {
   const sidebarActiveId = view === 'documents' ? docRequest?.conversationId : conversationId;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <Sidebar
         view={view}
         onViewChange={(v) => { setView(v); setSidebarOpen(false); }}
@@ -288,13 +326,19 @@ export default function App() {
         onRename={handleRename}
         onDelete={handleDelete}
         open={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
+        collapsed={sidebarCollapsed}
+        onClose={toggleSidebar}
         onSearch={handleSearch}
         theme={theme}
         onThemeChange={setTheme}
       />
       <div className="app-main">
-        <Header title={activeTitle} onMenu={() => setSidebarOpen(true)} />
+        <Header
+          title={activeTitle}
+          onToggleSidebar={toggleSidebar}
+          sidebarCollapsed={sidebarCollapsed}
+          onNewChat={handleNewChat}
+        />
         {view === 'chat' ? (
           <main className="chat-view">
             <ChatWindow

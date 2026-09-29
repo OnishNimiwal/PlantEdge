@@ -119,7 +119,8 @@ button {
 }
 
 .sidebar-close {
-  display: none;
+  display: inline-flex;
+  flex-shrink: 0;
 }
 
 .new-chat-btn {
@@ -450,4 +451,44 @@ button {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* ---- Collapsible sidebar (desktop), toggled top-left like other AI assistants ---- */
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.topbar-left:empty {
+  display: none;
+}
+
+@media (min-width: 861px) {
+  .sidebar {
+    transition: margin-left 0.22s ease, visibility 0s linear 0s;
+  }
+
+  /* Slide out; visibility:hidden (after the slide) also removes it from keyboard focus. */
+  .app-shell.sidebar-collapsed .sidebar {
+    margin-left: -272px;
+    visibility: hidden;
+    transition: margin-left 0.22s ease, visibility 0s linear 0.22s;
+  }
+
+  .topbar.is-sidebar-collapsed .topbar-menu {
+    display: inline-flex;
+  }
+
+  .topbar.is-sidebar-collapsed {
+    padding-left: 0.6rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .app-shell.sidebar-collapsed .sidebar {
+    transition: none;
+  }
 }
