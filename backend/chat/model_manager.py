@@ -120,12 +120,32 @@ CHARS_PER_TOKEN = 3.0        # conservative; measured ~2.75 for numeric text, ~4
 TOKENS_PER_IMAGE = 1100      # measured for a 1024 px image on qwen2.5vl
 
 
+# Calibrated characters-per-token per model (L34), learned from Ollama's own token counts
+# on text-only prompts. Kept within [2.5, 4.0] and scaled by 0.9 so budgets stay conservative.
+_ratio = {}
+
+
+def chars_per_token(model) -> float:
+    measured = _ratio.get(getattr(model, "ollama_name", model))
+    return CHARS_PER_TOKEN if measured is None else max(2.5, min(4.0, measured * 0.9))
+
+
+def calibrate(model, prompt_chars, data, image_count):
+    """Update the running chars/token estimate from a finished request (text-only, >= 2,000 chars)."""
+    tokens = (data.get("prompt_eval_count") or 0) + (data.get("prompt_eval_cached_count") or 0)
+    if image_count or prompt_chars < 2000 or tokens <= 0 or tokens >= context_window(model) // 2:
+        return  # images distort the count; tiny prompts are noisy; halved prompts were truncated
+    ratio = prompt_chars / tokens
+    old = _ratio.get(model.ollama_name)
+    _ratio[model.ollama_name] = ratio if old is None else 0.8 * old + 0.2 * ratio
+
+
 def context_window(model) -> int:
     return int(getattr(settings, "OLLAMA_NUM_CTX", 8192))
 
 
-def estimate_tokens(text: str = "", images: int = 0) -> int:
-    return int(len(text or "") / CHARS_PER_TOKEN) + images * TOKENS_PER_IMAGE
+def estimate_tokens(text: str = "", images: int = 0, model=None) -> int:
+    return int(len(text or "") / chars_per_token(model)) + images * TOKENS_PER_IMAGE
 
 
 def prompt_budget_tokens(model) -> int:
@@ -325,7 +345,7 @@ class ModelManager:
             "model": model.id,
             "ollama_model": model.ollama_name,
             "duration_ms": duration,
-            "context_overflow": (int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE)
+            "context_overflow": (int(prompt_chars / chars_per_token(model)) + image_count * TOKENS_PER_IMAGE)
             > context_window(model),
         }
 
@@ -360,7 +380,7 @@ class ModelManager:
             from monitoring.usage import record
             record(model, usage, False, error=exc, streamed=True)
             raise
-        return ChatStream(model, response, started, usage)
+        return ChatStream(model, response, started, usage, prompt_chars, image_count)
 
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
         _inflight_begin()
@@ -377,6 +397,7 @@ class ModelManager:
             "Inference success: model=%s ollama_model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
             model.id, model.ollama_name, duration, data.get("prompt_eval_count"), data.get("eval_count"),
         )
+        calibrate(model, prompt_chars, data, image_count)
         return data, duration
 
     def _send(self, endpoint, payload, model, prompt_chars, image_count, stream=False):
@@ -385,7 +406,7 @@ class ModelManager:
         The caller holds a GPU slot (_inflight_begin) around it and releases it.
         """
         # Log metadata only - never prompt or image contents.
-        estimated = int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE
+        estimated = int(prompt_chars / chars_per_token(model)) + image_count * TOKENS_PER_IMAGE
         logger.info(
             "Inference start: model=%s ollama_model=%s prompt_chars=%d images=%d num_ctx=%d think=%s",
             model.id, model.ollama_name, prompt_chars, image_count,
@@ -453,8 +474,9 @@ class ChatStream:
     Raises ModelManagerError if the stream breaks.
     """
 
-    def __init__(self, model, response, started, usage=None):
+    def __init__(self, model, response, started, usage=None, prompt_chars=0, image_count=0):
         self.model, self.response, self.started, self.usage = model, response, started, usage
+        self.prompt_chars, self.image_count = prompt_chars, image_count
         self._released = False
 
     def _release(self):
@@ -496,6 +518,7 @@ class ChatStream:
                     parts.append(message["content"])
                     yield {"type": "delta", "text": message["content"]}
                 if chunk.get("done"):
+                    calibrate(self.model, self.prompt_chars, chunk, self.image_count)
                     duration = int((time.monotonic() - self.started) * 1000)
                     logger.info(
                         "Inference success (stream): model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",

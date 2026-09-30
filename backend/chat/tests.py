@@ -1201,3 +1201,39 @@ class UnreadStreamTests(APITestCase):
         self.assertEqual(mm._inflight, 0)
         mock_post.return_value = ollama_ok("next")
         self.assertEqual(self.client.post(reverse("chat"), {"message": "hi"}, format="json").status_code, 200)
+
+
+class ContextImprovementsTests(APITestCase):
+    """L3 earlier-topics note, L34 calibrated token estimate."""
+
+    @override_settings(OLLAMA_NUM_CTX=2048, CONTEXT_MAX_MESSAGES=4)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_dropped_history_is_summarised_as_topics(self, mock_post):
+        from .models import Conversation, ChatMessage
+        conv = Conversation.objects.create()
+        topics = ["pump cavitation causes", "heat exchanger fouling", "valve sizing basics", "flare stack purge",
+                  "boiler blowdown", "compressor surge"]
+        for t in topics:
+            ChatMessage.objects.create(conversation=conv, role="user", content=f"Tell me about {t}")
+            ChatMessage.objects.create(conversation=conv, role="assistant", content="answer " * 50)
+        mock_post.return_value = ollama_ok()
+        r = self.client.post(reverse("chat"), {"message": "Which of those is most urgent?",
+                                               "conversation_id": str(conv.id)}, format="json")
+        msgs = mock_post.call_args.kwargs["json"]["messages"]
+        note = next(m["content"] for m in msgs if m["role"] == "system" and "Earlier in this conversation" in m["content"])
+        self.assertIn("pump cavitation causes", note)
+        self.assertTrue(r.data["context"]["earlier_topics_note"])
+        self.assertNotIn("compressor surge", note)  # still included in full, not listed
+
+    def test_calibration(self):
+        from . import model_manager as mm
+        from .model_registry import get_model
+        m = get_model("qwen3")
+        mm._ratio.pop(m.ollama_name, None)
+        self.assertEqual(mm.chars_per_token(m), 3.0)
+        mm.calibrate(m, 8000, {"prompt_eval_count": 2000}, image_count=0)   # 4.0 chars/token prose
+        self.assertAlmostEqual(mm.chars_per_token(m), 3.6)
+        mm.calibrate(m, 8000, {"prompt_eval_count": 4096}, image_count=0)   # truncated (>= ctx/2): ignored
+        mm.calibrate(m, 8000, {"prompt_eval_count": 500}, image_count=2)    # images distort: ignored
+        self.assertAlmostEqual(mm.chars_per_token(m), 3.6)
+        mm._ratio.pop(m.ollama_name, None)

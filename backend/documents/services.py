@@ -17,7 +17,7 @@ from django.conf import settings
 
 
 from chat.model_manager import (
-    generate_response, ModelManagerError, prompt_budget_tokens, CHARS_PER_TOKEN,
+    generate_response, ModelManagerError, prompt_budget_tokens, chars_per_token,
 )
 from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISION
 from chat.model_registry import get_model
@@ -49,7 +49,7 @@ def _ocr_note(document) -> str:
 
 def context_budget(model_tag: str, reserved_chars: int) -> int:
     """Characters of document text that fit the model's context window next to the rest of the prompt."""
-    return max(int(prompt_budget_tokens(get_model(model_tag)) * CHARS_PER_TOKEN) - reserved_chars, 1000)
+    return max(int(prompt_budget_tokens(get_model(model_tag)) * chars_per_token(get_model(model_tag))) - reserved_chars, 1000)
 
 
 def document_content(document, question, model_tag, reserved_chars):
@@ -64,7 +64,7 @@ def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
     (Ollama silently halves prompts that overflow num_ctx, dropping the instructions.)
     Returns (text, info) where info reports how much of the document the model saw.
     """
-    budget = int(prompt_budget_tokens(get_model(model_tag)) * CHARS_PER_TOKEN) - reserved_chars
+    budget = int(prompt_budget_tokens(get_model(model_tag)) * chars_per_token(get_model(model_tag))) - reserved_chars
     budget = max(budget, 1000)
     info = {"document_chars": len(text), "context_chars_used": min(len(text), budget),
             "context_truncated": len(text) > budget}
@@ -150,7 +150,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
         pages_available = list(vision_pages) if document.file_type == "PDF" else []
     else:
         # Leave a quarter of the budget for conversation history.
-        history_reserve = int(prompt_budget_tokens(get_model(decision["model"])) * CHARS_PER_TOKEN) // 4
+        history_reserve = int(prompt_budget_tokens(get_model(decision["model"])) * chars_per_token(get_model(decision["model"]))) // 4
         doc_text, context_info = document_content(
             document, question, decision["model"], reserved_chars=1500 + len(question) + history_reserve,
         )

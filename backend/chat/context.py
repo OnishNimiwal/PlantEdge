@@ -21,7 +21,7 @@ import uuid
 from django.conf import settings
 from django.core.files.base import ContentFile
 
-from .model_manager import CHARS_PER_TOKEN, TOKENS_PER_IMAGE, prompt_budget_tokens
+from .model_manager import TOKENS_PER_IMAGE, prompt_budget_tokens, chars_per_token
 from .model_registry import get_model
 from .models import Conversation, ChatMessage, ChatAttachment
 
@@ -99,6 +99,29 @@ def _attachment_b64(att) -> str:
         att.file.close()
 
 
+EARLIER_NOTE_CHARS = 700
+
+
+def _earlier_topics(conv, included_ids, exclude_ids=()):
+    """
+    Short note listing what the user asked in messages that no longer fit the context
+    window, so long conversations keep their thread (no model call, no summarisation).
+    """
+    older = (conv.messages.filter(role=ChatMessage.ROLE_USER).exclude(id__in=included_ids)
+             .exclude(id__in=exclude_ids).order_by("-id"))
+    lines, used = [], 0
+    for m in older[:12]:
+        first = " ".join((m.content or "").split())[:90]
+        if not first or used + len(first) > EARLIER_NOTE_CHARS - 120:
+            break
+        lines.append(f"- {first}")
+        used += len(first) + 3
+    if not lines:
+        return ""
+    return ("Earlier in this conversation (older messages not included in full), the user asked about:\n"
+            + "\n".join(reversed(lines)))
+
+
 def build_messages(conv, user_text, model_tag, new_images=None, system=None, reserved_chars=0,
                    extra_context="", exclude_ids=()):
     """
@@ -110,7 +133,8 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
         user_text = f"{user_text}\n\n{extra_context}"
     model = get_model(model_tag)
     new_images = new_images or []
-    budget = int(prompt_budget_tokens(model) * CHARS_PER_TOKEN) - len(user_text) - len(system or "") - reserved_chars
+    cpt = chars_per_token(model)
+    budget = int(prompt_budget_tokens(model) * cpt) - len(user_text) - len(system or "") - reserved_chars
 
     history = _recent(conv, _max_messages(), exclude_ids)
     reuse_images = []
@@ -123,7 +147,13 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
                 reuse_images, reused_from = atts, m.id
                 break
     image_count = len(new_images) + len(reuse_images)
-    budget -= int(image_count * TOKENS_PER_IMAGE * CHARS_PER_TOKEN)
+    budget -= int(image_count * TOKENS_PER_IMAGE * cpt)
+
+    # If the whole history cannot fit, keep room for a short list of earlier topics (L3).
+    older_count = conv.messages.exclude(id__in=exclude_ids).count() - len(history)
+    total_chars = sum(len(m.content) + len(m.extra_context or "") for m in history)
+    if older_count > 0 or total_chars > budget:
+        budget -= EARLIER_NOTE_CHARS
 
     selected = []
     used = 0
@@ -141,6 +171,9 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
         reuse_images, reused_from = [], None  # the image turn itself no longer fits
 
     messages = [{"role": "system", "content": system}] if system else []
+    note = _earlier_topics(conv, {m.id for m, _ in selected}, exclude_ids)
+    if note:
+        messages.append({"role": "system", "content": note})
     for m, content in selected:
         entry = {"role": m.role, "content": content}
         if m.id == reused_from:
@@ -153,6 +186,7 @@ def build_messages(conv, user_text, model_tag, new_images=None, system=None, res
 
     available = conv.messages.exclude(id__in=exclude_ids).count()
     info = {
+        "earlier_topics_note": bool(note),
         "history_messages_used": len(selected),
         "history_messages_available": available,
         "history_truncated": len(selected) < available,
