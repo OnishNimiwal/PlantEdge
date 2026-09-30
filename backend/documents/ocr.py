@@ -9,7 +9,7 @@ PaddleOCR downloads its model weights once on first use (to ~/.paddlex);
 after that it runs fully offline. Document contents never leave this machine.
 
 Configuration (settings / .env):
-  OCR_MODEL_PROFILE   server (default, most accurate) | mobile (~4x faster on CPU)
+  OCR_MODEL_PROFILE   mobile (default, ~3x faster on CPU) | server (most accurate, slower)
   OCR_DET_MODEL / OCR_REC_MODEL   explicit PaddleOCR model names (override the profile)
   OCR_LANG            default language; OCR_ALLOWED_LANGS lists what users may pick
   OCR_USE_DOC_ORIENTATION / OCR_USE_TEXTLINE_ORIENTATION / OCR_USE_UNWARPING
@@ -73,7 +73,7 @@ def engine_config(lang: str) -> dict:
     )
     det_model = getattr(settings, "OCR_DET_MODEL", "")
     rec_model = getattr(settings, "OCR_REC_MODEL", "")
-    profile = getattr(settings, "OCR_MODEL_PROFILE", "server")
+    profile = getattr(settings, "OCR_MODEL_PROFILE", "mobile")
     if det_model or rec_model:
         if det_model:
             kwargs["text_detection_model_name"] = det_model

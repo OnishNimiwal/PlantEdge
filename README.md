@@ -13,11 +13,12 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
 | **OCR** | PaddleOCR 3.7 (PaddlePaddle 3.3, CPU) for scanned PDFs and images |
 | **Storage** | SQLite (metadata, conversations, usage records) + local `media/` folder (uploads) |
 | **Target hardware** | One workstation/server with an 8 GB NVIDIA GPU, 16 GB RAM, serving LAN clients |
-| **Tests** | 138 automated backend tests + live browser verification |
+| **Tests** | 188 automated backend tests + a 12-step headless-browser smoke test (`tools/ui_smoke.py`) |
 
-> **Status:** working prototype, tested end to end on the development machine. Authentication,
-> production deployment hardening and retrieval-augmented generation (RAG) are **not implemented
-> yet** — see [Limitations & roadmap](#20-limitations--roadmap).
+> **Status:** working prototype, tested end to end on the development machine. Authentication and
+> production deployment hardening are **not implemented yet** (out of scope for now); long
+> documents use keyword (BM25) section retrieval, not a vector database — see
+> [Limitations & roadmap](#20-limitations--roadmap).
 
 ---
 
@@ -52,13 +53,24 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
 ## 1. What it does
 
 ### General Chat
-- ChatGPT/Claude-style interface: sidebar with conversation history, search, rename, delete,
-  collapsible sidebar (top-left toggle, `Ctrl/⌘+Shift+S`), light/dark/system theme.
+- ChatGPT/Claude-style interface: sidebar with conversation history (paged, *Show more*),
+  search, rename, delete, collapsible sidebar (top-left toggle, `Ctrl/⌘+Shift+S`),
+  light/dark/system theme.
+- **English / हिन्दी:** the whole interface can be switched to Hindi (EN / हिं switch in the
+  sidebar footer); answers then come in Hindi too (code, units and quoted text stay unchanged).
 - **Automatic model routing** — a deterministic router picks the right local model per request
-  (general reasoning → Qwen3, coding → Qwen2.5-Coder, images → Qwen2.5-VL). Manual model
-  selection is also available.
+  (general reasoning → Qwen3, coding → Qwen2.5-Coder, images → Qwen2.5-VL), including paraphrased
+  coding requests ("my loop never ends"), pasted code and Hindi keywords. An image + coding request
+  runs a **two-step chain**: Qwen2.5-VL describes the image, then Qwen2.5-Coder writes the code.
+  Manual model selection is also available.
+- **Fast by default:** Qwen3 answers directly; a **Think deeper** toggle turns on step-by-step
+  reasoning for hard questions. Models stay loaded for 30 min and are pre-loaded (warm-up) when
+  the page opens, the model changes or an image is attached. While waiting the answer shows what
+  is happening (*Loading Qwen3 8B into GPU memory · 4s*, *Reading the image…*).
 - **Streaming answers** (token by token), Markdown rendering (headings, lists, tables, quotes),
-  code blocks with syntax highlighting and a *Copy* button, *Copy* / *Regenerate* per answer.
+  code blocks with syntax highlighting (22 built-in languages, 37 more loaded on first use) and a
+  *Copy* button. Per answer: *Copy*, *Regenerate* (any stored answer, not only the last), 👍 / 👎.
+  Per question: **Edit** — changing a sent question replaces that turn and everything after it.
 - **Images:** attach up to 3 PNG/JPEG images per message; click to enlarge. Follow-up questions
   can refer to earlier images ("Which component is the largest?").
 - **OCR in chat:** an image of a document with a text task ("summarise this report") is read with
@@ -67,19 +79,31 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
 - Backend-held conversation history — the browser only remembers which conversation is open.
 
 ### Document Assistant
-- Upload **PDF, TXT, PNG, JPG** (max 15 MB). Digital PDFs use their text layer; scanned pages
-  and images are read with **local PaddleOCR** (page-orientation correction, optional OCR
-  language, table/multi-column layout warning).
+- Upload **PDF, TXT, PNG, JPG** (max 15 MB). The upload returns at once; text extraction runs in
+  a **background worker** with page-by-page progress. Digital PDFs use their text layer; scanned
+  pages and images are read with **local PaddleOCR** (page-orientation correction, optional OCR
+  language, **tables rebuilt as Markdown tables, two-column pages put in reading order**). Pages
+  with low OCR confidence (e.g. handwriting) are transcribed by the vision model instead, and the
+  UI says so.
 - Ask questions (with conversation history, streaming, regenerate), generate an executive
   summary, export a Word (`.docx`) report.
+- **Long documents:** the sections most relevant to the question are selected (BM25), labelled
+  with their page, and the answer cites pages as `[p. N]`; citations and numbers are checked
+  against the document automatically.
 - Visual questions about a PDF ("what does the drawing on page 3 show?") send the named pages
-  (max 2) to the vision model.
+  (max 2) to the vision model; "describe every page" analyses the PDF in batches of 2 pages (up
+  to 6 pages).
 - Limits (characters, pages, OCR pages) are configurable and reported in the UI.
 
 ### Dashboard
-- **Usage dashboard** — total/successful/failed/today's queries, usage per model, routing
-  distribution (General / Coding / Vision). Real database counts, never sample values.
-- **System status** — Django backend, Ollama, OCR engine.
+- **Usage dashboard** — total/successful/failed/today's queries, **14-day trend**, per-model table
+  (requests, failures, average response time, regenerations, 👍/👎 ratings), routing
+  distribution (General / Coding / Vision), OCR/extraction failures that happened before any
+  model ran. Real database counts, never sample values.
+- **System status** — Django backend, Ollama, OCR engine, **GPU & power** (warns when a laptop on
+  battery caps the GPU), **database** and **disk space**.
+- **Deep checks** (only when a button is pressed) — OCR reads a generated line of text; each
+  model answers a one-word prompt. Not counted as usage.
 - **Model health** — each model Ready/Unavailable, capability, size, whether it is currently in
   GPU memory, last successful use. Checks are lightweight: **no model is loaded and no inference
   is run.**
@@ -91,6 +115,8 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
   provided image*, *General AI response*, *Generated code — not executed*, or a warning such as
   *Not found in the provided document*. **This indicates the source of the answer, not that it is
   correct.**
+- Automatic checks add warnings under the answer: numbers not found in the document / OCR text,
+  cited pages that were not given to the model, and code answers that claim the code was run.
 
 ---
 
@@ -113,6 +139,13 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
 | UI 2 | Streaming, dark mode, search, upload progress, bundle splitting, accessibility | `248e08d` |
 | UI 3 | Collapsible sidebar with top-left toggle | `27c67d3` |
 | Reliability & monitoring | Usage dashboard, system status + model health, reliability layer | `8e576f2` |
+| Docs | Complete README | `c63b6ca` |
+| Speed | Thinking off by default + *Think deeper*, keep-alive, warm-up, background OCR, mobile OCR profile, GPU power check, long-document retrieval | `de4691c` |
+| Documents 2 | Table/column reconstruction, vision fallback for low-confidence OCR, whole-PDF overview | `ffc2a4a` |
+| Routing 2 | Paraphrased coding requests, pasted code, vision → coder chain, GPU request queue | `bd66ab2` |
+| Context 2 | Earlier-topics note for long conversations, calibrated token estimate | `99eff1e` |
+| UI 4 | Hindi / English interface, edit & regenerate any turn, paged history, fenced-table fix, lazy grammars, smoke test | `86c03a3` |
+| Monitoring 2 | Answer ratings, 14-day trend, deep checks, DB/disk status, backfill & retention commands | `93c3a7b` |
 
 ---
 
@@ -131,7 +164,7 @@ flowchart LR
             M[("media/<br/>uploads & chat images")]
             O["Ollama :11434<br/>(loopback only)"]
             G["GPU 8 GB<br/>one model at a time"]
-            P["PaddleOCR<br/>(CPU, in Django process)"]
+            P["PaddleOCR<br/>(CPU, background worker thread)"]
         end
     end
     U1 -- "HTTP (UI, /api, /media)" --> V
@@ -161,6 +194,8 @@ flowchart TB
     RT["chat/router.py + routing_rules.py<br/>Model router (deterministic rules)"]
     REL["chat/reliability.py<br/>Reliability instructions + answer basis"]
     PROC["documents/processing.py<br/>Document processor"]
+    JOBS["documents/jobs.py<br/>Background extraction worker"]
+    RET["documents/retrieval.py + verify.py<br/>BM25 sections, number/citation checks"]
     OCR["documents/ocr.py<br/>PaddleOCR (CPU)"]
     EXT["documents/extractors.py<br/>PyMuPDF text layer / TXT"]
     MM["chat/model_manager.py<br/>Execution layer (only code that calls Ollama)"]
@@ -173,7 +208,8 @@ flowchart TB
     CV --> CTX --> RT
     CV --> REL
     CV --> PROC --> OCR
-    DV --> EXT --> OCR
+    DV --> JOBS --> EXT --> OCR
+    DV --> RET
     DV --> RT
     DV --> REL
     DV --> PROC
@@ -195,7 +231,9 @@ flowchart TB
 | `chat/context.py` | Conversation history within the context-window budget; re-send the latest images to the vision model only | Model calls |
 | `chat/reliability.py` | Reliability instructions per mode; answer basis indicator | Routing, model calls |
 | `documents/ocr.py` | Images/PDF pages → text (PaddleOCR on CPU) | Any model/Ollama logic |
-| `documents/processing.py` | OCR for chat images, PDF page rendering, page selection | Model selection |
+| `documents/processing.py` | OCR for chat images, PDF page rendering, page selection, overview batches | Model selection |
+| `documents/jobs.py` | One background worker thread: extraction/OCR after upload, progress, interrupted-job recovery | Model selection |
+| `documents/retrieval.py`, `verify.py` | Page-labelled sections, BM25 ranking; deterministic number and citation checks | Model calls |
 | `monitoring/*` | Usage aggregation, health checks | Inference, model loading |
 
 ### 3.3 Chat request flow (streaming)
@@ -222,12 +260,16 @@ sequenceDiagram
     end
     V->>L: system prompt for mode (general/coding/vision/image_text)
     V->>C: build bounded message history (+ reused image for VL)
-    V->>M: chat_stream(model, messages, usage)
+    opt vision_coding route
+        V->>M: Qwen2.5-VL describes the image (stage event)
+    end
+    V->>M: chat_stream(model, messages, usage, think)
+    Note over M: waits for the GPU slot (one request at a time)
     M->>O: POST /api/chat (stream=true, num_ctx=8192)
     Note over M,O: connection / missing-model / GPU OOM errors<br/>return plain JSON errors before streaming starts
     M-->>B: NDJSON start → thinking → delta … delta
     M->>M: record usage (success / failure / disconnect)
-    V->>C: store user turn (+images, OCR text) and answer (+basis)
+    V->>C: store user turn (+images, OCR text) and answer (+basis, check warnings)
     V-->>B: NDJSON done {response, model, routing, basis, context, ...}
 ```
 
@@ -239,16 +281,19 @@ persistence (`finish_turn`) steps and returns one JSON object.
 ```mermaid
 flowchart TD
     UP["Upload PDF / TXT / PNG / JPG"] --> VAL["Validate type, signature, size (15 MB)"]
-    VAL --> T{File type}
+    VAL --> BG["202 Accepted · background worker<br/>(status queued → processing → ready/failed)"]
+    BG --> T{File type}
     T -- TXT --> TXT["Decode UTF-8 / Latin-1"]
     T -- PNG/JPG --> OCRI["PaddleOCR image<br/>(orientation correction)"]
     T -- PDF --> PG{"Each page:<br/>text layer ≥ 20 chars?"}
     PG -- yes --> TL["PyMuPDF text"]
     PG -- no --> RND["Render page 200 dpi"] --> OCRP["PaddleOCR page<br/>(max OCR_MAX_PDF_PAGES)"]
-    TXT & OCRI & TL & OCRP --> JOIN["Combine (page markers when OCR used)<br/>layout check · confidence · limits"]
+    OCRP --> LOW{"confidence < 0.80?"}
+    LOW -- yes --> VT["Qwen2.5-VL transcribes the page"]
+    TXT & OCRI & TL & OCRP & VT --> JOIN["Combine (page markers, page offsets)<br/>tables/columns rebuilt · confidence · limits"]
     JOIN --> STORE[("Document row + file in media/")]
     STORE --> Q["Question"] --> RQ["Router (image available = PDF/image doc)"]
-    RQ -- "text question" --> TXTQ["qwen3 · document text fitted to context window<br/>+ document reliability mode"]
+    RQ -- "text question" --> TXTQ["qwen3 · whole text, or BM25 sections labelled [p. N]<br/>+ document reliability mode → number/citation checks"]
     RQ -- "visual question" --> VIS["qwen2.5vl · named pages rendered ≤1024 px (max 2)<br/>+ vision reliability mode"]
     RQ -- "coding question" --> COD["qwen2.5-coder · document text"]
 ```
@@ -275,6 +320,11 @@ erDiagram
         bool complex_layout
         bool truncated
         int original_chars
+        string status "queued/processing/ready/failed"
+        int progress_done
+        int progress_total
+        json page_offsets
+        int vision_fallback_pages
     }
     Conversation {
         uuid id
@@ -291,6 +341,8 @@ erDiagram
         string basis "document/image/image_text/general/code"
         string basis_detail
         bool basis_undetermined
+        json basis_warnings
+        string feedback "up/down/empty"
     }
     ChatAttachment {
         file file
@@ -306,6 +358,9 @@ erDiagram
         string error_type
         int duration_ms
         bool streamed
+        bool regenerated
+        string stage "model/ocr/extraction"
+        bool backfilled
         datetime created_at
     }
 ```
@@ -364,7 +419,7 @@ tokens (`index.css`) and a dark theme; all assets are bundled locally.
 
 | Tool | Use |
 |---|---|
-| Django test runner | 138 backend tests (Ollama and OCR mocked where appropriate) |
+| Django test runner | 188 backend tests (Ollama and OCR mocked where appropriate); `tools/ui_smoke.py` for the live UI |
 | Headless Google Chrome + Chrome DevTools Protocol | Live end-to-end UI verification (streaming, copy, images, sidebar, dashboard, console errors) |
 | axe-core 4 | Automated accessibility audit (WCAG 2.x rules) in light and dark themes |
 | `samples/ocr_benchmark.py` | OCR accuracy/speed/memory benchmark on generated test scans |
@@ -383,13 +438,16 @@ The registry (`backend/chat/model_registry.py`) is the single source of truth. A
 | `qwen-vl` | `qwen2.5vl:7b` | vision | multimodal | Images, visual PDF questions, image + OCR requests | 6.0 GB |
 
 - **Sequential loading:** only one model is resident in the 8 GB GPU at a time. Ollama unloads an
-  idle model when another is requested; a model switch costs ~12–16 s. The workbench never
-  preloads models.
+  idle model when another is requested; a model switch costs ~3–8 s on mains power. Models stay
+  loaded for `OLLAMA_KEEP_ALIVE` (30 min) and the likely model is **warmed up** (loaded without
+  generating) when the page opens, the model is changed or an image is attached — skipped while
+  another request is running.
+- **One request on the GPU at a time:** further requests wait in a queue (up to
+  `OLLAMA_QUEUE_TIMEOUT`, then "busy") instead of running out of GPU memory.
 - **Context window:** every request sets `num_ctx=8192` (Ollama's default is 4096, which silently
   truncates longer prompts — see §19).
-- **Qwen3 "thinking":** Qwen3 reasons before answering; the reasoning text is never shown or
-  stored. `OLLAMA_THINK=false` makes answers much faster (see §19) at the cost of less
-  step-by-step reasoning.
+- **Qwen3 "thinking":** off by default (answers ~10× faster, see §19.3). The **Think deeper**
+  toggle turns it on for one message; the reasoning text is never shown or stored.
 
 Verify installation at any time:
 
@@ -451,7 +509,7 @@ development machine** unless marked as recommendations.
 | State | RSS |
 |---|---|
 | Django idle | ~107 MB |
-| After first OCR (engine stays loaded) | ~970 MB |
+| After first OCR (engine unloaded again after 10 min idle, `OCR_IDLE_UNLOAD_SECONDS`) | ~970 MB |
 | Peak during 2-page PDF OCR at 200 dpi | ~3.5 GB |
 
 ### 6.6 Network & ports
@@ -480,9 +538,9 @@ Clients are ordinary PCs on the LAN. **No model or OCR runs on the client.**
 | CPU / RAM | Any office PC; the page uses tens of MB of memory |
 | GPU | Not required |
 | Network | HTTP access to the server (port 5173 in development, or the web server in production). No external requests: no CDNs, web fonts or analytics |
-| Download size | Initial JS **~180 KB (58 KB gzipped)** + CSS ~31 KB; the Markdown renderer (~81 KB gz), Document Assistant (~8 KB gz) and Dashboard (~3 KB gz) load on first use |
+| Download size | Initial JS **~217 KB (72 KB gzipped)** + CSS ~46 KB (9 KB gz); the Markdown renderer (~82 KB gz), Document Assistant (~9 KB gz), Dashboard (~6 KB gz) and extra code grammars (1–7 KB each) load on first use |
 | Local processing | Images are resized in the browser (canvas) to ≤1024 px before upload — the backend enforces this limit again |
-| Browser storage | `localStorage` keys `mrpl.chat.conversationId` (open conversation), `mrpl.theme`, `mrpl.sidebar.collapsed` — conveniences only; all conversation content lives on the server |
+| Browser storage | `localStorage` keys `mrpl.chat.conversationId` (open conversation), `mrpl.theme`, `mrpl.sidebar.collapsed`, `mrpl.lang` (interface language) — conveniences only; all conversation content lives on the server |
 | Clipboard | Copy buttons use the Clipboard API; on plain-HTTP LAN deployments a fallback is used |
 | Accessibility | Keyboard navigation, focus rings, ARIA labels, WCAG AA contrast; axe-core audit clean |
 
@@ -567,7 +625,11 @@ See `.env.example` for a ready template.
 | `DEFAULT_CHAT_MODEL` | `qwen3` | Model id used when none is resolved |
 | `OLLAMA_TIMEOUT` | `300` | Seconds per model request |
 | `OLLAMA_NUM_CTX` | `8192` | Context window per request |
-| `OLLAMA_THINK` | *(empty)* | Qwen3 thinking: empty = model default (on), `false` = off (faster), `true` = force on |
+| `OLLAMA_THINK` | `false` | Qwen3 thinking default (`false` = answer directly, fast; `true` = always reason). Users can turn on *Think deeper* per message |
+| `OLLAMA_KEEP_ALIVE` | `30m` | How long a model stays in GPU memory after its last request |
+| `OLLAMA_WARMUP` | `true` | Allow `POST /api/models/warmup/` (load a model ahead of the request) |
+| `OLLAMA_MAX_CONCURRENT` | `1` | Model requests on the GPU at the same time; others queue |
+| `OLLAMA_QUEUE_TIMEOUT` | `180` | Seconds a queued request waits before "busy" (HTTP 503) |
 | `RELIABILITY_INSTRUCTIONS` | `true` | Add reliability instructions to every model's system message |
 | `CHAT_SYSTEM_PROMPT` | formatting guidance | Extra system text for General Chat (empty = none) |
 
@@ -581,6 +643,8 @@ See `.env.example` for a ready template.
 | `VISION_MAX_INPUT_PIXELS` | `50000000` | Reject larger images before decoding |
 | `MAX_IMAGES_PER_MESSAGE` | `3` | Images per chat message |
 | `VISION_MAX_PDF_PAGES` | `2` | PDF pages the vision model sees per question |
+| `VISION_OVERVIEW_MAX_PAGES` | `6` | "Describe every page": pages analysed in sequential batches |
+| `VISION_CODING_CHAIN` | `true` | Image + coding request: vision model describes, coder writes the code |
 
 ### Documents & OCR
 
@@ -588,16 +652,25 @@ See `.env.example` for a ready template.
 |---|---|---|
 | `DOCUMENT_MAX_CHARS` | `50000` | Characters kept from a document (reported when truncated) |
 | `DOCUMENT_MAX_PDF_PAGES` | `300` | PDFs with more pages are rejected |
+| `DOCUMENT_ASYNC_PROCESSING` | `true` | Extract text / OCR in a background worker (`false` = inside the upload request) |
 | `OCR_MAX_PDF_PAGES` | `20` | Scanned pages OCR'd per PDF (skipped pages are reported) |
 | `OCR_PDF_DPI` | `200` | Render resolution for scanned PDF pages |
 | `OCR_LANG` | `en` | Default OCR language |
 | `OCR_ALLOWED_LANGS` | `OCR_LANG` | Languages users may pick per upload (`en,hi,mr,ka,ta,te,ml,ch,latin`) — each downloads its model once |
-| `OCR_MODEL_PROFILE` | `server` | `server` (most accurate) or `mobile` (~3× faster on CPU) |
+| `OCR_MODEL_PROFILE` | `mobile` | `mobile` (~6 s/page on CPU) or `server` (~20 s/page, for a stronger server) |
+| `OCR_VISION_FALLBACK` / `OCR_VISION_FALLBACK_BELOW` | `true` / `0.80` | Pages with lower OCR confidence are transcribed by the vision model |
+| `OCR_IDLE_UNLOAD_SECONDS` | `600` | Free the OCR engine's memory after this idle time (0 = keep) |
 | `OCR_DET_MODEL` / `OCR_REC_MODEL` | *(empty)* | Explicit PaddleOCR model names (override the profile) |
 | `OCR_USE_DOC_ORIENTATION` | `true` | Page-orientation correction (fixes rotated scans) |
 | `OCR_USE_TEXTLINE_ORIENTATION` | `false` | Text-line orientation (did not help in tests) |
 | `OCR_USE_UNWARPING` | `false` | Document unwarping for photographed curved pages (not evaluated) |
 | `OCR_CPU_THREADS` | `8` | CPU threads for OCR |
+
+### Monitoring
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `USAGE_RETENTION_DAYS` | `365` | Usage rows older than this are removed by `prune_usage --apply` |
 
 Legacy variables `OLLAMA_MODEL` and `ALLOW_EXTERNAL_AI` are **no longer used**; `manage.py check`
 warns if they are set. There is no cloud-AI option.
@@ -610,23 +683,28 @@ warns if they are set. There is no cloud-AI option.
 - Type a question and press **Enter** (Shift+Enter = new line). The model picker shows **Auto**
   (router decides) or a specific model.
 - 📎 attaches up to 3 PNG/JPEG images. Click a sent image to enlarge it (Esc closes).
+- **Think deeper** (next to the model picker) turns on step-by-step reasoning for the next
+  messages — slower, for hard questions.
 - Each answer shows *MRPL Local AI · model · routing* and a basis indicator; hover the routing
-  label to see why the router chose that model. Use **Copy** or **Regenerate** under the answer.
-- Sidebar: **New chat**, search (titles and message text), rename ✎, delete 🗑, Chat / Document
-  Assistant / Dashboard, theme toggle (bottom), collapse button (top). Shortcut `Ctrl/⌘+Shift+S`.
+  label to see why the router chose that model. Under the answer: **Copy**, **Regenerate**, 👍 / 👎.
+  Hover a question for ✎ **Edit** (Enter = save & submit, Esc = cancel).
+- Sidebar: **New chat**, search (titles and message text), rename ✎, delete 🗑, **Show more**, Chat /
+  Document Assistant / System Status, **EN / हिं** language switch and theme toggle (bottom),
+  collapse button (top). Shortcut `Ctrl/⌘+Shift+S`.
 
 ### Document Assistant
-1. Upload a PDF, TXT, PNG or JPG (drag & drop). Progress shows *Uploading %* → *Processing* →
-   *Ready*. Scanned pages take ~20 s each.
-2. Warnings appear for truncated text, skipped OCR pages, tables/multi-column layouts and low OCR
-   recognition confidence.
-3. **Document Q&A** — ask questions; say "page 3" to make the vision model look at a page.
+1. Upload a PDF, TXT, PNG or JPG (drag & drop). Progress shows *Uploading %* → *Processing page
+   N of M* → *Ready*; scanned pages take ~6–10 s each. You can keep working meanwhile.
+2. Warnings appear for truncated text, skipped OCR pages, reconstructed tables/columns, pages read
+   by the vision model and low OCR recognition confidence.
+3. **Document Q&A** — ask questions; answers cite `[p. N]`. Say "page 3" to make the vision model
+   look at a page, or "describe every page" for a page-by-page overview.
 4. **AI Executive Summary**, **Extracted Text** (copyable) and **Export DOCX**.
 5. Q&A conversations appear in the sidebar with a file icon.
 
 ### Dashboard
-- **Refresh** reloads usage statistics; **Check Status** re-runs the health checks. Nothing is
-  polled automatically.
+- **Refresh** reloads usage statistics; **Check Status** re-runs the health checks; **Run test**
+  (Deep checks) runs OCR or one model for real. Nothing is polled automatically.
 
 ---
 
@@ -647,7 +725,10 @@ Request:
   "model": "auto",
   "images": ["<base64 or data: URL>"],
   "conversation_id": "optional-uuid",
-  "regenerate": false
+  "regenerate": false,
+  "edit_from": null,
+  "think": false,
+  "language": "en"
 }
 ```
 
@@ -658,6 +739,9 @@ Request:
 | `images` | 0–3 PNG/JPEG, ≤10 MB each; resized server-side to ≤1024 px |
 | `conversation_id` | Continue a conversation; unknown/omitted → new conversation |
 | `regenerate` | Re-run the last question of `conversation_id`; the old answer is replaced only on success |
+| `edit_from` | Id of an earlier **user** message: that turn and everything after it are replaced by this request (with `message` = edited question, or with `regenerate: true` = re-ask it unchanged) |
+| `think` | `true` = Qwen3 reasons step by step for this request (slower); default from `OLLAMA_THINK` |
+| `language` | `en` (default) or `hi` — answer in Hindi |
 
 Response (success):
 
@@ -673,6 +757,8 @@ Response (success):
   "basis": {"type": "code", "label": "Generated code — not executed", "detail": "", "undetermined": false},
   "ocr": null,
   "images": [],
+  "user_message_id": 41,
+  "assistant_message_id": 42,
   "duration_ms": 12913,
   "context_overflow": false,
   "external_api": false
@@ -685,8 +771,12 @@ Special reply when a visual request has no image (no model is called):
 {"success": true, "needs_image": true, "response": "This looks like a request about an image, but no image is attached. …", "model": null}
 ```
 
+`basis.warnings` lists automatic check results (e.g. *Values not found in the OCR text: 42*,
+*The answer says the code was run or tested, but the workbench did not execute it.*).
+
 Errors: `400` validation · `503` Ollama unavailable / model not installed / GPU out of memory /
-misconfigured endpoint / OCR failure · `504` timeout · `502` other model errors. Error bodies
+misconfigured endpoint / OCR failure / GPU busy (queue timeout) · `504` timeout · `502` other
+model errors. Error bodies
 contain a short message only — no stack traces or internal addresses.
 
 #### `POST /api/chat/stream/` — streaming answer (NDJSON)
@@ -694,7 +784,8 @@ contain a short message only — no stack traces or internal addresses.
 Same request body. Response `Content-Type: application/x-ndjson`, one JSON object per line:
 
 ```text
-{"type": "start", "conversation_id": "…", "routing": {…}, "ollama_model": "qwen3:8b", "ocr": null, "images": []}
+{"type": "start", "conversation_id": "…", "routing": {…}, "ollama_model": "qwen3:8b", "model_loading": true, "thinking_enabled": false, "ocr": null, "images": []}
+{"type": "stage", "stage": "vision", "label": "Reading the image with Qwen2.5-VL 7B"}   (vision → coder chain only)
 {"type": "thinking"}
 {"type": "delta", "text": "Federated "}
 {"type": "delta", "text": "learning …"}
@@ -718,10 +809,16 @@ Returns `model`, `model_id`, `reason`, `requires_image`, `ocr`, `explanation`, `
 
 | Method & path | Description |
 |---|---|
-| `GET /api/chat/conversations/` | Up to 50 most recent conversations with messages. Query: `scope=all` (include Document Q&A), `document=<id>`, `q=<text>` (searches titles **and** message text) |
-| `GET /api/chat/conversations/<uuid>/` | Messages (role, content, model, routing_reason, images URLs, basis) |
+| `GET /api/chat/conversations/` | Most recent conversations, paged: `offset`, `limit` (≤200, default 50) → `conversations`, `has_more`. Query: `scope=all` (include Document Q&A), `document=<id>`, `q=<text>` (searches titles **and** message text) |
+| `GET /api/chat/conversations/<uuid>/` | Messages (id, role, content, model, routing_reason, images URLs, basis incl. warnings, feedback) |
+| `POST /api/chat/messages/<id>/feedback/` | Rate an answer: `{"value": "up" \| "down" \| null}` |
 | `PATCH /api/chat/conversations/<uuid>/` | Rename: `{"title": "…"}` |
 | `DELETE /api/chat/conversations/<uuid>/` | Delete conversation, messages and stored images |
+
+#### `POST /api/models/warmup/`
+
+`{"model": "qwen-vl"}` — load a model into GPU memory without generating (returns at once;
+skipped while another request is running or when `OLLAMA_WARMUP=false`).
 
 #### `GET /api/models/`
 
@@ -733,21 +830,22 @@ the default model and limits (`max_images_per_message`, `vision_max_side`).
 | Method & path | Description |
 |---|---|
 | `GET /api/documents/` | List documents |
-| `POST /api/documents/upload/` | Multipart: `file` (PDF/TXT/PNG/JPG ≤15 MB), optional `ocr_lang`. Returns the document incl. `extraction_method`, `ocr_pages`, `ocr_confidence`, `page_count`, `ocr_pages_skipped`, `truncated`, `complex_layout`, `limits` |
+| `POST /api/documents/upload/` | Multipart: `file` (PDF/TXT/PNG/JPG ≤15 MB), optional `ocr_lang`. **202** with the document (`status: queued`); poll `GET /api/documents/<id>/` for `status` (`queued`/`processing`/`ready`/`failed`), `progress_done`/`progress_total`, then `extraction_method`, `ocr_pages`, `ocr_confidence`, `page_count`, `ocr_pages_skipped`, `truncated`, `complex_layout`, `vision_fallback_pages`, `processing_error`, `limits`. (201 with the finished document when `DOCUMENT_ASYNC_PROCESSING=false`.) Q&A/summary on a document that is not ready → **409** |
 | `GET /api/documents/ocr-config/` | Allowed OCR languages and default |
 | `GET /api/documents/<id>/` | Document detail incl. extracted text |
 | `DELETE /api/documents/<id>/` | Delete document, file and its Q&A conversations |
-| `POST /api/documents/<id>/ask/` | `{"question": "…", "conversation_id": "…", "regenerate": false}` → `answer`, `model`, `ollama_model`, `routing`, `context`, `basis`, `vision_pages`, `page_count`, `conversation_id` |
-| `POST /api/documents/<id>/ask/stream/` | Streaming variant (same NDJSON events; `done` carries `answer`) |
-| `POST /api/documents/<id>/summary/` | Executive summary (`summary`, `model`, `basis`, `context`) |
+| `POST /api/documents/<id>/ask/` | `{"question": "…", "conversation_id": "…", "regenerate": false, "think": false, "language": "en"}` → `answer`, `model`, `ollama_model`, `routing`, `context` (incl. `retrieval`, `sections_used`, `pages`), `basis` (incl. `warnings`), `vision_pages`, `pages_not_covered`, `page_count`, `conversation_id`, `user_message_id`, `assistant_message_id` |
+| `POST /api/documents/<id>/ask/stream/` | Streaming variant (same NDJSON events; `stage` events per page batch for "describe every page"; `done` carries `answer`) |
+| `POST /api/documents/<id>/summary/` | `{"language": "en" \| "hi"}` (optional) → executive summary (`summary`, `model`, `basis`, `context`) |
 | `POST /api/documents/<id>/generate-report/` | `{"summary": "…"}` → `.docx` file download |
 
 ### 11.3 Dashboard
 
 | Method & path | Description |
 |---|---|
-| `GET /api/dashboard/usage/?tz_offset=<minutes>` | `total_queries`, `successful_queries`, `failed_queries`, `today` (viewer's local day; `tz_offset` = browser `getTimezoneOffset()`), `models` {tag: count}, `model_details` (per model incl. `last_success`), `routing` {general, coding, vision}, `sources`, `first_recorded` |
-| `GET /api/dashboard/status/` | `services.backend/ollama/ocr` with `state` (`ready`/`unavailable`), `label`, `reason`; `models[]` with `state`, `capability_label`, `size_bytes`, `loaded`, `vram_bytes`, `last_success` |
+| `GET /api/dashboard/usage/?tz_offset=<minutes>` | `total_queries`, `successful_queries`, `failed_queries`, `today` (viewer's local day; `tz_offset` = browser `getTimezoneOffset()`), `models` {tag: count}, `model_details` (per model: `queries`, `failed`, `avg_ms`, `regenerated`, `feedback` {up, down}, `last_success`), `routing` {general, coding, vision}, `sources`, `trend` (14 × {date, total, failed, avg_ms}), `regenerated`, `backfilled`, `pre_model_failures` {ocr, extraction}, `feedback`, `first_recorded` |
+| `GET /api/dashboard/status/` | `services.backend/ollama/ocr/gpu/database/disk` with `state` (`ready`/`degraded`/`unavailable`), `label`, `reason`, `warnings`; `models[]` with `state`, `capability_label`, `size_bytes`, `loaded`, `vram_bytes`, `last_success` |
+| `POST /api/dashboard/deep-check/` | `{"target": "ocr" \| "qwen3" \| "qwen-coder" \| "qwen-vl"}` → `success`, `detail`, `duration_ms` — runs OCR / a tiny generation; **loads the model**, only on explicit request, not counted as usage |
 
 ### 11.4 Admin
 
@@ -810,8 +908,15 @@ qwen3 without an image, VL with one.
   placeholder `[user attached N image(s)]` plus any stored OCR text.
 - OCR text of chat images is stored with the user message (`extra_context`) so follow-up questions
   can use it; it is not shown in the UI.
-- Document Q&A conversations are linked to their document; the document text is placed in the
-  system message and trimmed to leave a quarter of the budget for history.
+- Document Q&A conversations are linked to their document; the document text (or the retrieved
+  sections, §14) is placed in the system message, leaving a quarter of the budget for history.
+- **Long conversations:** turns that no longer fit are not silently lost — a short *earlier topics*
+  note (first line of each dropped question, ≤700 characters) is added so the model knows what was
+  discussed. It is a list of topics, not a model-written summary.
+- **Token estimate:** characters-per-token is calibrated per model from Ollama's real
+  `prompt_eval_count` (bounded 2.5–4.0, with a 10 % safety margin); it starts at a conservative 3.0.
+- **Edit / regenerate:** replacing an earlier turn excludes it and everything after it from the
+  context; the old messages are deleted only after the new answer succeeds.
 
 ---
 
@@ -819,17 +924,30 @@ qwen3 without an image, VL with one.
 
 - **Text layer first:** PDF pages with ≥20 characters of text use PyMuPDF; only scanned pages
   are OCR'd (mixed PDFs are supported, `extraction_method = text+ocr`).
-- **OCR engine:** PaddleOCR on CPU (keeps the GPU free for Ollama), engine loaded once per
-  language and reused; access is serialised with a lock.
+- **Background processing:** the upload is stored and a single worker thread extracts the text
+  (one document at a time, so OCR never competes with itself); progress is stored per page.
+  Documents interrupted by a server restart are marked *failed* with a clear message.
+- **OCR engine:** PaddleOCR on CPU (keeps the GPU free for Ollama), **mobile profile** by default
+  (~6 s/page), engine loaded once per language, reused, and freed after 10 min idle; access is
+  serialised with a lock.
 - **Orientation correction** (PP-LCNet doc orientation) is on by default.
-- **Layout heuristic:** rows with several text boxes separated by wide gaps (≥3 rows, ≥30 % of
-  rows) mark the document as *table / multi-column*, and the UI warns that reading order may be
-  wrong.
+- **Layout reconstruction:** OCR boxes are grouped into rows; tables (rows with several aligned
+  cells) are rebuilt as **Markdown tables**, and two-column pages (a vertical gutter) are read
+  column by column. The document is still flagged *table / multi-column* so users check tables.
+- **Vision fallback:** a page whose OCR confidence is below 0.80 (handwriting, poor scans) is
+  transcribed by Qwen2.5-VL instead, marked "(vision transcription)" in the text, and counted in
+  `vision_fallback_pages` with a UI warning (a vision model can misread or invent text).
 - **Recognition confidence** is PaddleOCR's own score (mean over lines), labelled as such — it is
   not measured accuracy.
-- **Model context:** the document text given to the model is trimmed to fit the context window;
-  when trimmed, the answer notes how many characters the model saw.
-- **Visual questions** render only the requested pages (default page 1, max 2) at ≤1024 px.
+- **Long documents (retrieval):** when the text does not fit the context window, it is split into
+  ~1,200-character sections labelled with their page (`[p. N]`), ranked with **BM25** against the
+  question (local, no embeddings), and the best sections are sent in document order (the opening
+  section is kept). Summaries use evenly spread sections. The answer notes which pages were used.
+- **Answer checks** (`documents/verify.py`): numbers in the answer that appear nowhere in the
+  document, and `[p. N]` citations to pages that were not given to the model, are shown as
+  warnings.
+- **Visual questions** render only the requested pages (default page 1, max 2) at ≤1024 px;
+  "describe every page" runs sequential 2-page batches (max 6 pages) and reports pages not covered.
 
 ---
 
@@ -868,10 +986,18 @@ Computed in code from **what was actually sent to the model**:
 | ✓ Based on text read from the provided image (OCR) | `ocr_text` route |
 | ℹ General AI response | General knowledge answers |
 | ℹ Generated code — not executed | Coding answers |
-| ⚠ Not found in the provided document / Cannot be determined from the provided image | A grounded answer whose opening matches a fixed list of "not available" phrases |
+| ⚠ Not found in the provided document / Cannot be determined from the provided image | A grounded answer whose opening matches a list of "not available" phrases (English and Hindi) |
 
-No page numbers are invented: text answers name the document only, because the page an answer
-came from is not tracked.
+**Automatic checks** (deterministic, shown as warnings under the basis indicator):
+
+| Check | Where |
+|---|---|
+| Numbers in the answer not found in the document / OCR text | Document Q&A, OCR-text chat answers |
+| `[p. N]` citations to pages that were not given to the model | Document Q&A |
+| Claims that code was run, tested or "works perfectly" | Coding answers |
+
+The instructions are short (~140–210 tokens per request, depending on the mode). Answers stored
+before the basis feature can be labelled with `manage.py backfill_usage --apply`.
 
 ---
 
@@ -885,8 +1011,16 @@ came from is not tracked.
   name, duration, streamed flag, timestamp. **Not recorded:** prompts, answers, document text,
   images, OCR text.
 - Failures are recorded (timeouts, Ollama unavailable, GPU OOM, interrupted streams, client
-  disconnects). Requests that never reach a model (validation errors, the *attach an image* reply)
-  are not counted.
+  disconnects). **OCR failures in chat and text-extraction failures of uploads** are recorded as
+  separate `stage` rows (they are not model calls). Validation errors and the *attach an image*
+  reply are not counted.
+- Regenerations and edits are flagged (`regenerated`), so the dashboard shows how often answers
+  were re-asked.
+- **Ratings:** 👍 / 👎 are stored on the answer (`ChatMessage.feedback`) and shown per model. They
+  are user opinions, not accuracy.
+- **Earlier history:** `manage.py backfill_usage --apply` reconstructs usage rows (marked
+  `backfilled`, no timing) for answers stored before tracking began.
+- **Retention:** `manage.py prune_usage --apply` deletes rows older than `USAGE_RETENTION_DAYS`.
 - Statistics are independent of conversations (deleting a chat does not change them). Reset with
   `cleanup_dev_data --usage --all --yes`.
 
@@ -896,7 +1030,14 @@ came from is not tracked.
 | Django backend | The status endpoint responding |
 | Ollama | `GET /api/version`, `/api/tags` (installed models), `/api/ps` (loaded models + VRAM), each with a 3 s timeout, through the same local-only endpoint check as inference |
 | OCR engine | PaddleOCR/PaddlePaddle packages findable and model files present on disk; reports whether the engine is already loaded — the engine is **not** loaded by the check |
+| GPU & power | `nvidia-smi` (name, memory, temperature, power limit) and `/sys/class/power_supply`: **Limited** when a laptop runs on battery (the GPU drops from ~55 W to ~10 W, answers ~10× slower) |
+| Database | `SELECT 1` latency and SQLite file size |
+| Disk space | Free space where uploads are stored; **Limited** below 5 GB or 10 % |
 | Model health | Ready = installed in Ollama; Unavailable with a plain reason; plus capability, size, loaded-in-GPU state and last successful use |
+
+**Deep checks** (opt-in, per button): OCR reads a generated line (*PUMP P-101 PRESSURE 12.5 BAR*)
+and must return every word; a model must answer a one-word prompt. These load OCR / the model
+(10–60 s) and are not counted as usage.
 
 "Ready" means **installed and reachable**, not that answers are good. Usage counts are request
 counts, not accuracy.
@@ -924,7 +1065,8 @@ counts, not accuracy.
   and delete all conversations, documents and statistics.
 - Development defaults: `DEBUG=True`, insecure default `SECRET_KEY`, `ALLOWED_HOSTS=*`, CORS
   allows all origins, Django `runserver` (not a production server), media served by Django.
-- No encryption at rest, no retention policy, no audit log, no rate limiting, HTTP (not HTTPS).
+- No encryption at rest, no audit log, no rate limiting, HTTP (not HTTPS). Retention exists for
+  usage statistics only (`prune_usage`); conversations and documents are kept until deleted.
 - The Ollama allowlist is a network restriction, not complete security.
 
 ---
@@ -933,14 +1075,25 @@ counts, not accuracy.
 
 ```bash
 cd backend
-../env/bin/python manage.py test chat documents monitoring      # 138 tests
+../env/bin/python manage.py test chat documents monitoring      # 188 tests
 ```
 
 | App | Tests | Covers |
 |---|---|---|
-| `chat` | 79 | API contract, routing rules (30+ cases), image safety, context/history, streaming (events, errors, disconnects, 406 regression), regenerate, rename, search, local-only endpoint rules, GPU OOM mapping, reliability instructions and basis |
-| `documents` | 45 | Upload/extraction, OCR paths (mocked), limits, context fitting, visual page selection, document conversations, streaming Q&A, regenerate, grounding prompt and basis, cleanup command |
-| `monitoring` | 14 | Usage recording (routes, failures, streams, disconnects, no content stored), aggregation, status/health with Ollama mocked (ready, missing model, Ollama down, misconfigured URL), OCR status |
+| `chat` | 97 | API contract, routing rules (paraphrases, pasted code, Hindi, vision → coder chain), image safety, context/history (earlier-topics note, token calibration), streaming (events, errors, disconnects, 406 regression, GPU slot release), regenerate, edit, language, pagination, rename, search, local-only endpoint rules, GPU queue, reliability instructions, basis and execution-claim check |
+| `documents` | 62 | Upload/extraction (sync and background), OCR paths (mocked), layout reconstruction, vision fallback, limits, retrieval (BM25, page labels), number/citation checks, visual page selection and overview batches, document conversations, streaming Q&A, regenerate, summary language, cleanup command |
+| `monitoring` | 29 | Usage recording (routes, failures, streams, disconnects, regenerations, OCR failures, no content stored), aggregation, trend, ratings API, backfill and prune commands, status/health (Ollama, OCR, GPU/power, database, disk), deep checks |
+
+**UI smoke test** (real models, headless Chrome; needs the backend, Vite and Ollama running):
+
+```bash
+env/bin/python tools/ui_smoke.py            # --app http://127.0.0.1:5173 --api http://127.0.0.1:8000
+```
+
+12 checks: page loads without errors, Hindi interface, Hindi answer, screen-reader announcement,
+edit, regenerate an earlier answer, rating stored, Document Assistant and System Status in Hindi,
+trend/table/DB/disk on the dashboard, OCR deep check, back to English. It deletes only the
+conversations it created.
 
 **OCR benchmark** (real PaddleOCR on generated samples):
 
@@ -978,10 +1131,26 @@ tokens each) fit at 8k; a single raw 4K image caused CUDA OOM before backend res
 ### 19.3 Latency
 | Measurement | Result |
 |---|---|
-| Model switch (load) | ~12–16 s |
-| Qwen3 simple question, thinking on / off | 39.2 s / 3.3 s (same answer) |
+| Model switch (load) | ~12–16 s measured early (incl. cold disk cache); ~3–8 s on mains power with a warm cache |
+| Qwen3 simple question, thinking on / off | 39.2 s / 3.3 s (same answer) → thinking is now off by default |
 | Streaming token interval (Coder) | ~18 ms per token, first token after model load |
 | Qwen2.5-VL image description (warm) | ~2–20 s |
+
+**Response-time optimisation — before / after** (same machine, on mains power; *first word* =
+time until the first token appears, *total* = complete answer; benchmark script driving the
+streaming API):
+
+| Request | Old defaults (thinking on, keep-alive 5 min, OCR server, OCR in request) | New defaults |
+|---|---|---|
+| General question, model already loaded | 6.3 s / 7.6 s | **0.2 s / 1.2 s** |
+| General question, cold start | 8.1 s / 9.4 s | **3.9 s / 4.8 s** |
+| Back to general after a coding question (model switch) | 10.7 s / 15.7 s | **2.8 s / 7.6 s** |
+| Coding question with model switch | 6.7 s / 17.1 s | 7.2 s / 16.4 s (unchanged: model load + long answer) |
+| 2-page scanned PDF upload | 60.3 s until the response | **response at once**, ready after 22.5 s |
+
+**Battery power:** on battery the laptop GPU is capped at ~10 W instead of ~55 W and answers took
+128–155 s instead of a few seconds. System Status now shows *GPU & power: Limited — Running on
+battery* in that case.
 
 ### 19.4 OCR benchmark (accuracy = character similarity to known text)
 
@@ -999,14 +1168,18 @@ tokens each) fit at 8k; a single raw 4K image caused CUDA OOM before backend res
 - Page-orientation correction fixed rotated scans at negligible cost → **on by default**.
 - Text-line orientation did not help and produced **high confidence (0.996) on wrong output** →
   off.
-- The mobile profile is ~3× faster with similar accuracy on these synthetic samples; the server
-  profile stays default until real scans prove otherwise.
+- The mobile profile is ~3× faster with similar accuracy on these synthetic samples (it was
+  worse only on uncorrected rotation, which orientation correction handles), so it is now the
+  default on this CPU-only machine; `OCR_MODEL_PROFILE=server` switches back.
 - Rotated scans without correction had recognition confidence ~0.66, which is why the UI warns
   below 0.85.
 - **Kannada** sample: English model 0.15 accuracy (with misleading 0.76 confidence); Kannada model
   (`ka_PP-OCRv3_mobile_rec`) 0.77.
 - Table and two-column samples were correctly flagged by the layout heuristic; PaddleOCR's table
-  pipeline was evaluated but needs 26 extra packages (`paddlex[ocr]`) and was not adopted.
+  pipeline was evaluated but needs 26 extra packages (`paddlex[ocr]`) and was not adopted —
+  instead tables and columns are rebuilt from the OCR box positions (§14). An early version
+  assigned boxes to columns by their centre and mis-placed wide lines; assigning by the box's left
+  edge fixed it.
 - PaddlePaddle 3.3 CPU with oneDNN crashed (`ConvertPirAttribute2RuntimeAttribute not support`);
   oneDNN is disabled.
 - OCR ran successfully with networking disabled (`unshare -rn`), confirming offline operation.
@@ -1022,6 +1195,7 @@ false-positive cases that motivated negative phrases ("training program", "human
 | Initial JavaScript | 534 KB (164 KB gz) | **180 KB (58 KB gz)** |
 | Technique | — | curated highlight.js grammars; lazy Markdown renderer, Document Assistant and Dashboard |
 | Accessibility (axe-core) | contrast + landmark issues | **0 violations** (light & dark) |
+| Interface languages | English | English + Hindi (≈330 strings; missing entries fall back to English) |
 
 Bugs found by live testing: DRF content negotiation rejected `Accept: application/x-ndjson` with
 HTTP 406 (fixed with a custom negotiation class); a failed lazy chunk load unmounted the whole
@@ -1045,36 +1219,123 @@ hallucination rate.
 
 ## 20. Limitations & roadmap
 
-### Current limitations (summary)
+Status key: **IMPLEMENTED** — addressed (what remains is noted) · **PARTIAL** — mitigated, not
+solved · **NOT** — still open · **BY DESIGN** — a deliberate property.
 
-| Area | Limitation |
-|---|---|
-| Security | No authentication/authorisation; development defaults; no HTTPS, encryption at rest, retention policy or audit log |
-| Routing | Keyword/phrase rules; paraphrases without keywords can be misrouted; follow-up detection is heuristic; mixed image + coding requests are answered by the vision model (no VL→Coder chain) |
-| Context | Bounded history, no summarisation of long conversations; token counts are estimated |
-| Documents | Model sees ~17,000 characters of a long document per question (no retrieval); visual analysis limited to 2 named PDF pages; no page-level citations for text answers |
-| OCR | ~20 s/page on CPU; tested on synthetic scans only; tables/columns flattened (warning only); handwriting not supported; OCR runs inside the HTTP request (no background jobs); non-English accuracy lower (Kannada 0.77) |
-| Vision | Max 3 images of 1024 px; concurrency on the 8 GB GPU not tested |
-| Models / GPU | One model in GPU at a time (12–16 s switch); 8k context ceiling on 8 GB; Qwen3 thinking on by default (slow) |
-| UI | Regenerate only for the latest answer; search over the latest 50 results; no translation of the interface; no manual screen-reader testing; output formatting depends on the model |
-| Dashboard | Counts requests, not accuracy; history starts when the feature was added; no per-user or time-series views; manual reset only |
-| Health | Point-in-time checks, no polling; "Ready" = installed, not verified by inference; no GPU/driver health beyond Ollama's loaded-model data |
-| Reliability | Instructions can be ignored by the model; "not found" detection is a phrase heuristic; basis ≠ correctness; general answers are not fact-checked |
-| Operations | Django development server and SQLite; no deployment scripts; GitHub push currently requires repository write access |
+### A. General
+
+| ID | Limitation | Status | What remains |
+|---|---|---|---|
+| L3 | Conversation history | IMPLEMENTED | Older turns become an *earlier topics* note (topic list, not a summary) |
+| L5 | Qwen3 thinking delay | IMPLEMENTED | Off by default; *Think deeper* per message is slow by nature |
+| L13 | LAN security | PARTIAL | Restricts where model requests go; not full security |
+| L14/L12/L29 | Legacy settings, redirects | IMPLEMENTED | — |
+| L27 | Test-data cleanup | IMPLEMENTED | Manual command |
+| L28 | Context window / long documents | IMPLEMENTED | BM25 keyword retrieval (no semantic search); questions phrased with different words than the document can miss sections |
+| L32 | GitHub push | NOT | Needs repository write access (not a code issue) |
+| L33 | Authentication / access control | NOT | Out of scope for now: everything is visible to anyone on the LAN |
+| L34 | Token counts are estimates | IMPLEMENTED | Calibrated per model from Ollama's counts; still an estimate before the first request |
+
+### B. Routing
+
+| ID | Limitation | Status | What remains |
+|---|---|---|---|
+| L7 | Keyword-based routing | PARTIAL | Paraphrases, pasted code and Hindi keywords added; still rules, no semantic understanding |
+| L8 | Mixed vision + coding | IMPLEMENTED | Vision → coder chain; the coder only sees the vision model's description |
+| L10 | Follow-ups | PARTIAL | Rule-based detection |
+| L24/L25 | Visual questions; OCR vs vision | IMPLEMENTED | Keyword-based |
+
+### C. Vision
+
+| ID | Limitation | Status | What remains |
+|---|---|---|---|
+| L1/L2 | Large / several images | IMPLEMENTED | 3 × 1024 px; several users are queued (one GPU request at a time), not run in parallel |
+| L9 | Vision request without image | IMPLEMENTED | — |
+| L17 | PDF visual analysis | IMPLEMENTED | Named pages (max 2) or "every page" in batches up to 6 pages |
+
+### D–E. OCR & documents
+
+| ID | Limitation | Status | What remains |
+|---|---|---|---|
+| L15 | OCR speed | IMPLEMENTED | ~6 s/page (mobile profile) in the background; still CPU-bound |
+| L16 | Page / character limits | IMPLEMENTED | Reported to the user |
+| L18 | Real-world scan quality | PARTIAL | Orientation correction + vision fallback; tested on synthetic scans only — real plant scans needed |
+| L19 | Tables and columns | IMPLEMENTED | Rebuilt from box positions; merged cells and nested tables are not handled |
+| L20 | Handwriting | PARTIAL | Low-confidence pages go to the vision model, which can misread; not tested on real handwriting |
+| L21 | OCR language | IMPLEMENTED | Kannada 0.77 accuracy; mobile models exist for some languages only |
+| L22 | "Confidence" wording | IMPLEMENTED | PaddleOCR's score can be high on wrong text |
+| L23 | OCR memory | IMPLEMENTED | Engine freed after 10 min idle; ~3.5 GB peak during OCR |
+| L30/L4 | Document Q&A history, shared execution layer | IMPLEMENTED | — |
+| L31 | OCR inside the request | IMPLEMENTED | One in-process worker thread; a multi-process deployment would need a task queue |
+
+### F. UI
+
+| Limitation | Status | What remains |
+|---|---|---|
+| Streaming, dark mode, sidebar, upload progress, bundle size | IMPLEMENTED | — |
+| Search / history over latest 50 | IMPLEMENTED | Paged with *Show more* |
+| Code highlighting languages | IMPLEMENTED | 59 languages (37 loaded on demand) |
+| Output formatting | PARTIAL | Depends on the model; fenced Markdown tables are unwrapped |
+| Regenerate only the latest answer | IMPLEMENTED | Any stored answer (earlier ones replace the turns after them, with confirmation); plus Edit |
+| Accessibility | PARTIAL | axe-core clean, *Answer ready* announced; no manual screen-reader testing |
+| Translation | IMPLEMENTED | English / Hindi interface and answers; server messages that are not in the dictionary (e.g. some error reasons) stay English |
+| UI regression script | IMPLEMENTED | `tools/ui_smoke.py` (12 checks) |
+
+### G–H. Models & GPU
+
+| Limitation | Status | What remains |
+|---|---|---|
+| One model loaded at a time | BY DESIGN | Switch ~3–8 s; keep-alive + warm-up hide most of it |
+| 8 GB GPU | PARTIAL | 8k context ceiling; requests queued one at a time, so several users wait instead of failing; long queues give "busy" after 180 s |
+| Response time | IMPLEMENTED | See §19.3; on battery power the GPU is ~10× slower (shown on System Status) |
+
+### I. Usage dashboard
+
+| Limitation | Status | What remains |
+|---|---|---|
+| Counts requests, not accuracy | BY DESIGN | 👍/👎 ratings add user opinion, still not accuracy |
+| No earlier history | IMPLEMENTED | `backfill_usage --apply` (successful answers only; no timing) |
+| Regenerations / pre-model failures not visible | IMPLEMENTED | Flagged and counted separately |
+| No trends / retention | IMPLEMENTED | 14-day trend; `prune_usage` retention |
+| No per-user breakdown | NOT | Needs authentication (L33) |
+| Test requests included | PARTIAL | Remove with `cleanup_dev_data --usage` if wanted |
+
+### J–K. System status & model health
+
+| Limitation | Status | What remains |
+|---|---|---|
+| Snapshot, no auto-refresh | BY DESIGN | — |
+| "Online" only proves the API answered | IMPLEMENTED | Database and disk checks added |
+| "OCR Ready" = files present | IMPLEMENTED | Deep check runs OCR for real (opt-in) |
+| No GPU / driver health | IMPLEMENTED | `nvidia-smi` + power source; other GPU vendors not supported |
+| "Ready" = installed, not verified | IMPLEMENTED | Deep check runs each model (opt-in, loads it into GPU memory) |
+| Last successful use only since tracking | IMPLEMENTED | Backfill covers older answers |
+| "Loaded in GPU" is momentary | BY DESIGN | — |
+| Health ≠ answer quality | BY DESIGN | — |
+
+### L. Reliability (hallucination reduction)
+
+| Limitation | Status | What remains |
+|---|---|---|
+| Instructions can be ignored | PARTIAL | Cannot be eliminated; checks catch some cases |
+| "Not found" detection is a phrase list | PARTIAL | Broader English + Hindi phrases; can still miss or misfire |
+| Basis = inputs, not correctness | BY DESIGN | — |
+| General knowledge not verified | NOT | No local knowledge source to verify against |
+| OCR errors carry into answers | PARTIAL | Vision fallback, number check against OCR text; wrong-but-plausible text is not detectable |
+| No page-level citations | IMPLEMENTED | `[p. N]` citations, checked against the pages given to the model |
+| "Code not executed" is instruction-only | IMPLEMENTED | Execution claims are detected and flagged; code is still never run (no sandbox) |
+| Observed / Inferred / Unknown not always followed | PARTIAL | Instruction only |
+| Instructions add ~250 tokens | IMPLEMENTED | Now ~140–210 tokens |
+| Old messages have no basis | IMPLEMENTED | `backfill_usage --apply` labels them |
 
 ### Roadmap (future enhancements)
-- Authentication, roles, audit logging, HTTPS, production deployment (Gunicorn/Uvicorn + reverse
-  proxy), data retention policies.
-- Retrieval-augmented generation with a vector store and page-level citations; deterministic
-  checks of numeric claims against sources; evaluation datasets.
-- Semantic / learned routing; VL→Coder multi-step pipelines; agent frameworks.
-- Background OCR jobs with progress; table extraction; handwriting recognition; validation on
-  real plant scans.
+- Authentication, roles, per-user usage, audit logging, HTTPS, production deployment
+  (Gunicorn/Uvicorn + reverse proxy, a task queue for OCR).
+- Semantic retrieval (local embeddings) next to BM25; evaluation datasets with real plant documents.
+- Semantic / learned routing; agent frameworks.
+- Validation on real scans and handwriting; table structure with merged cells.
 - Sandboxed code execution so generated code can actually be tested.
-- Response-time optimisation (thinking defaults, OCR mobile profile, caching) and response-format
-  standardisation.
-- Dashboard trends, per-user usage, GPU/driver monitoring.
-- Interface translation (e.g. Kannada, Hindi).
+- More interface languages (e.g. Kannada, Marathi).
 
 ---
 
@@ -1090,9 +1351,13 @@ cd backend
 ../env/bin/python manage.py cleanup_dev_data --name test_ --yes    # by filename
 ../env/bin/python manage.py cleanup_dev_data --conversations --older-than 30 --yes
 ../env/bin/python manage.py cleanup_dev_data --usage --all --yes   # reset dashboard statistics
+../env/bin/python manage.py backfill_usage                         # dry run: usage/basis for old answers
+../env/bin/python manage.py backfill_usage --apply
+../env/bin/python manage.py prune_usage                            # dry run: rows older than USAGE_RETENTION_DAYS
+../env/bin/python manage.py prune_usage --days 90 --apply
 ```
 
-All cleanup commands are **dry runs unless `--yes` is given**.
+All cleanup commands are **dry runs unless `--yes` / `--apply` is given**.
 
 ### Logs
 Console logging for `chat`, `documents` and `monitoring`: routing decisions, context sizes,
@@ -1107,9 +1372,13 @@ content is not logged.
 | "The selected model is not installed…" | `ollama pull <tag>`; run `check_local_models` |
 | "Local AI server is misconfigured." | `OLLAMA_URL` is public/link-local or a LAN host missing from `OLLAMA_ALLOWED_HOSTS` |
 | "The local GPU ran out of memory…" | Fewer/smaller images; lower `OLLAMA_NUM_CTX`; close other GPU programs |
-| First answer after switching models is slow | Model load (12–16 s) — expected with sequential loading |
-| Qwen3 answers take 30–90 s | Thinking is on; set `OLLAMA_THINK=false` if speed matters more |
-| Scanned upload takes minutes | OCR ~20 s/page on CPU; consider `OCR_MODEL_PROFILE=mobile`; limit with `OCR_MAX_PDF_PAGES` |
+| Every answer is very slow (minutes) | Laptop on battery: the GPU is power-capped (~10 W). Connect the charger; System Status shows *GPU & power: Limited* |
+| First answer after switching models is slow | Model load (3–8 s) — expected with sequential loading; warm-up hides it when possible |
+| Qwen3 answers take 30–90 s | *Think deeper* is on (brain button) or `OLLAMA_THINK=true` |
+| "The local AI is busy" | Another request held the GPU longer than `OLLAMA_QUEUE_TIMEOUT` (180 s); retry |
+| Scanned upload takes minutes | OCR ~6 s/page (mobile) in the background; `server` profile is ~3× slower; limit with `OCR_MAX_PDF_PAGES` |
+| Document stuck / "Processing was interrupted" | The server restarted during processing; upload the file again |
+| `no such column …` after an update | Run `../env/bin/python manage.py migrate` |
 | OCR "models missing" on an offline server | Copy `~/.paddlex/official_models` from a connected machine |
 | Blank answers after installing frontend packages during development | Restart Vite with `npx vite --force` (stale dependency cache) |
 | `manage.py check` warns about `OLLAMA_MODEL` / `ALLOW_EXTERNAL_AI` | Remove these legacy variables from `.env` |
@@ -1134,7 +1403,7 @@ Dj/
 │   │   ├── context.py            # conversation context manager
 │   │   ├── reliability.py        # reliability instructions + answer basis
 │   │   ├── images.py             # image validation / resizing
-│   │   ├── views.py              # chat, stream, route, conversations, models endpoints
+│   │   ├── views.py              # chat, stream, route, conversations, feedback, models, warm-up endpoints
 │   │   ├── serializers.py, models.py, urls.py, admin.py, checks.py, services.py
 │   │   ├── management/commands/check_local_models.py
 │   │   ├── migrations/
@@ -1142,7 +1411,10 @@ Dj/
 │   ├── documents/
 │   │   ├── extractors.py         # PDF text layer / TXT / OCR fallback, limits
 │   │   ├── ocr.py                # PaddleOCR processor (CPU), layout heuristic, languages
-│   │   ├── processing.py         # chat-image OCR, page rendering, page selection
+│   │   ├── processing.py         # chat-image OCR, page rendering, page selection, overview batches
+│   │   ├── jobs.py               # background extraction worker
+│   │   ├── retrieval.py          # page-labelled sections, BM25 ranking
+│   │   ├── verify.py             # number and citation checks
 │   │   ├── services.py           # document Q&A / summary (router + execution layer)
 │   │   ├── generators.py         # DOCX report
 │   │   ├── views.py, serializers.py, models.py, urls.py
@@ -1152,8 +1424,9 @@ Dj/
 │   └── monitoring/
 │       ├── models.py             # UsageRecord
 │       ├── usage.py              # recording + aggregation
-│       ├── health.py             # Ollama / OCR / model health (metadata only)
+│       ├── health.py             # Ollama / OCR / GPU / DB / disk / model health; opt-in deep checks
 │       ├── views.py, urls.py, admin.py
+│       ├── management/commands/  # backfill_usage.py, prune_usage.py
 │       ├── migrations/
 │       └── tests.py
 ├── frontend/
@@ -1167,7 +1440,9 @@ Dj/
 │       │   ├── documents/        # DocumentsPage, DocumentUpload, DocumentList, DocumentViewer, DocumentQuestionBox
 │       │   └── dashboard/        # DashboardPage
 │       ├── styles/               # shell.css, chat.css, dashboard.css
-│       └── utils/                # highlight.js (curated grammars), modelLabels.js
+│       └── utils/                # i18n.jsx (English/Hindi), highlight.js (grammars + lazy loading), modelLabels.js
+├── tools/
+│   └── ui_smoke.py               # headless-Chrome end-to-end smoke test
 └── samples/
     ├── make_samples.py           # generates synthetic test scans
     ├── ocr_benchmark.py          # OCR accuracy/speed/memory benchmark
