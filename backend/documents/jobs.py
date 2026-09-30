@@ -95,6 +95,7 @@ def process(doc_id, lang):
         original_chars=extraction["original_chars"],
         ocr_lang=lang if extraction["ocr_pages"] else "",
         complex_layout=extraction["complex_layout"],
+        vision_fallback_pages=extraction.get("vision_fallback_pages", 0),
         processing_error="",
     )
     logger.info("Document job done: doc_id=%s method=%s pages=%s", doc_id, extraction["method"],

@@ -24,13 +24,20 @@ export function BasisIndicator({ basis }) {
   const Icon = basis.undetermined ? AlertTriangle : grounded ? CheckCircle2 : Info;
   const tone = basis.undetermined ? 'is-warn' : grounded ? 'is-grounded' : 'is-info';
   return (
-    <div
-      className={`basis ${tone}`}
-      title="Shows what this answer was based on. It does not guarantee that the answer is correct."
-    >
-      <Icon size={13} aria-hidden="true" />
-      <span>{basis.label}</span>
-      {basis.detail && <span className="basis-detail">· {basis.detail}</span>}
+    <div className="basis-wrap">
+      <div
+        className={`basis ${tone}`}
+        title="Shows what this answer was based on. It does not guarantee that the answer is correct."
+      >
+        <Icon size={13} aria-hidden="true" />
+        <span>{basis.label}</span>
+        {basis.detail && <span className="basis-detail">· {basis.detail}</span>}
+      </div>
+      {basis.warnings?.map((w) => (
+        <div key={w} className="basis-warning" title="Automatic check against the source (not a model judgement)">
+          <AlertTriangle size={12} aria-hidden="true" /> {w}
+        </div>
+      ))}
     </div>
   );
 }

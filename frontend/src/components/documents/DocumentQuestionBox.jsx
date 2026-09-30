@@ -17,7 +17,15 @@ function footnotes(res) {
       'Mention "page N" in your question to look at another page.'
     );
   }
-  if (res.context?.context_truncated) {
+  if (res.pages_not_covered > 0) {
+    notes.push(`${res.pages_not_covered} later page(s) were not analysed (limit per question). Ask about "pages N–M" to see them.`);
+  }
+  if (res.context?.retrieval) {
+    notes.push(
+      `Long document: the ${res.context.sections_used} most relevant of ${res.context.sections_total} sections were used` +
+      (res.context.pages?.length ? ` (pages ${res.context.pages.join(', ')}).` : '.')
+    );
+  } else if (res.context?.context_truncated) {
     notes.push(
       `Answer based on the first ${res.context.context_chars_used.toLocaleString()} of ` +
       `${res.context.document_chars.toLocaleString()} characters (model context limit).`

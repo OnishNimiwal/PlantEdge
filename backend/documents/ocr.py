@@ -151,6 +151,88 @@ def detect_complex_layout(boxes) -> bool:
     return split_rows >= 3 and split_rows / len(rows) >= 0.3
 
 
+def _rows(boxes):
+    """Group box indexes into visual rows (top to bottom), each row sorted left to right."""
+    heights = boxes[:, 3] - boxes[:, 1]
+    tol = max(float(np.median(heights)) * 0.5, 1.0)
+    order = np.argsort((boxes[:, 1] + boxes[:, 3]) / 2)
+    rows, current, last_y = [], [], None
+    for i in order:
+        y = (boxes[i, 1] + boxes[i, 3]) / 2
+        if last_y is not None and abs(y - last_y) > tol:
+            rows.append(current)
+            current = []
+        current.append(int(i))
+        last_y = y
+    if current:
+        rows.append(current)
+    return [sorted(r, key=lambda i: boxes[i, 0]) for r in rows]
+
+
+def _find_gutter(boxes):
+    """x position of a clear vertical gutter between two text columns, or None."""
+    x0, x1 = float(boxes[:, 0].min()), float(boxes[:, 2].max())
+    width = x1 - x0
+    for frac in np.linspace(0.3, 0.7, 41):
+        g = x0 + width * frac
+        crossing = np.sum((boxes[:, 0] < g) & (boxes[:, 2] > g))
+        left = np.sum(boxes[:, 2] <= g)
+        right = np.sum(boxes[:, 0] >= g)
+        if crossing <= 0.1 * len(boxes) and left >= 0.25 * len(boxes) and right >= 0.25 * len(boxes):
+            return g
+    return None
+
+
+def reconstruct_layout(texts, boxes):
+    """
+    Rebuild reading order for complex pages (L19):
+      - two-column pages: read the left column, then the right one
+      - tables: rows with 3+ aligned cells become a Markdown table
+    Returns (text, kind) with kind "columns" | "table" | None (unchanged order).
+    """
+    if boxes is None or len(boxes) != len(texts) or len(texts) < 4:
+        return "\n".join(texts), None
+    b = np.asarray(boxes, dtype=float).reshape(len(boxes), -1)[:, :4]
+    rows = _rows(b)
+    table_rows = [r for r in rows if len(r) >= 3]
+    if len(table_rows) >= 3:
+        # Column anchors from the left edges of cells in table rows.
+        xs = sorted(b[i, 0] for r in table_rows for i in r)
+        tol = float(np.median(b[:, 3] - b[:, 1])) * 2
+        anchors = []
+        for x in xs:
+            if not anchors or x - anchors[-1][-1] > tol:
+                anchors.append([x])
+            else:
+                anchors[-1].append(x)
+        cols = [float(np.mean(a)) for a in anchors]
+        lines, in_table = [], False
+        for r in rows:
+            if len(r) >= 3:
+                cells = [""] * len(cols)
+                for i in r:
+                    c = int(np.argmin([abs(b[i, 0] - x) for x in cols]))
+                    cells[c] = (cells[c] + " " + texts[i]).strip()
+                lines.append("| " + " | ".join(cells) + " |")
+                if not in_table:
+                    lines.append("|" + "---|" * len(cols))
+                    in_table = True
+            else:
+                if in_table:
+                    lines.append("")
+                in_table = False
+                lines.append("  ".join(texts[i] for i in r))
+        return "\n".join(lines).strip(), "table"
+    gutter = _find_gutter(b)
+    if gutter is not None:
+        left = [i for i in range(len(texts)) if b[i, 0] < gutter]   # by where the line starts
+        right = [i for i in range(len(texts)) if b[i, 0] >= gutter]
+        by_y = lambda idx: sorted(idx, key=lambda i: (b[i, 1], b[i, 0]))
+        text = "\n".join(texts[i] for i in by_y(left)) + "\n\n" + "\n".join(texts[i] for i in by_y(right))
+        return text.strip(), "columns"
+    return "\n".join(texts), None
+
+
 _last_used = 0.0
 _unload_timer = None
 
@@ -188,14 +270,20 @@ def _recognize(image: np.ndarray, lang: str) -> dict:
         result = _get_engine(lang).predict(image)[0]
         _last_used = time.monotonic()
     _schedule_unload()
-    texts = [t for t in result["rec_texts"] if t and t.strip()]
-    scores = list(result["rec_scores"])[: len(texts)]
-    boxes = result.get("rec_boxes")
+    raw_texts = list(result["rec_texts"])
+    raw_boxes = result.get("rec_boxes")
+    keep = [i for i, t in enumerate(raw_texts) if t and t.strip()]
+    texts = [raw_texts[i] for i in keep]
+    scores = [list(result["rec_scores"])[i] for i in keep]
+    boxes = np.asarray(raw_boxes)[keep] if raw_boxes is not None and len(raw_boxes) == len(raw_texts) else None
+    complex_layout = detect_complex_layout(boxes)
+    text, layout = reconstruct_layout(texts, boxes) if complex_layout else ("\n".join(texts), None)
     return {
-        "text": "\n".join(texts),
+        "text": text,
+        "layout": layout,
         "lines": len(texts),
         "confidence": round(float(np.mean(scores)), 3) if scores else 0.0,
-        "complex_layout": detect_complex_layout(boxes),
+        "complex_layout": complex_layout,
     }
 
 

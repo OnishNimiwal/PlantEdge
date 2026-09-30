@@ -23,6 +23,7 @@ from chat.model_manager import ModelManager, ModelManagerError, loaded_models
 from chat.views import ndjson_stream, streaming_response, StreamNegotiation
 from .services import (
     NothingToRegenerate,
+    OverviewStream,
     prepare_document_question,
     finish_document_question,
     ask_document_question,
@@ -193,8 +194,12 @@ class DocumentAskStreamView(APIView):
                             status=status.HTTP_400_BAD_REQUEST)
         try:
             model_loading = prepared["decision"]["model"] not in loaded_models()
-            opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"],
-                                                usage=prepared["usage"], think=prepared["think"])
+            if prepared["overview"]:
+                opened = OverviewStream(prepared["overview"], prepared["decision"]["model"],
+                                        usage=prepared["usage"], think=prepared["think"])
+            else:
+                opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"],
+                                                    usage=prepared["usage"], think=prepared["think"])
         except ModelManagerError as exc:
             return Response({"success": False, "error": exc.public_message},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)

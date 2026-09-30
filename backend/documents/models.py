@@ -23,6 +23,7 @@ class Document(models.Model):
     original_chars = models.PositiveIntegerField(default=0)
     ocr_lang = models.CharField(max_length=10, blank=True)       # PaddleOCR language used
     complex_layout = models.BooleanField(default=False)           # table / multi-column detected
+    vision_fallback_pages = models.PositiveIntegerField(default=0)  # low-confidence pages re-read by the VL model
     # Background processing (documents/jobs.py)
     status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_READY)
     progress_done = models.PositiveIntegerField(default=0)

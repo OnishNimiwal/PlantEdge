@@ -52,6 +52,29 @@ def requested_pages(question: str, page_count: int) -> list:
     return pages[:limit] or [1]
 
 
+_OVERVIEW = re.compile(
+    r"\b(?:all|every|each)\s+(?:of\s+)?(?:the\s+)?pages\b|\b(?:every|each)\s+page\b"
+    r"|\b(?:whole|entire|full|complete)\s+(?:document|pdf|report|file|drawing set)\b|\bpage\s+by\s+page\b",
+    re.IGNORECASE,
+)
+
+
+def wants_overview(question: str) -> bool:
+    """'Describe all pages', 'the whole document', 'page by page'..."""
+    return bool(_OVERVIEW.search(question or ""))
+
+
+def overview_batches(page_count: int) -> tuple:
+    """
+    ([[1, 2], [3, 4], ...], pages_not_covered): pages analysed in sequential batches of
+    VISION_MAX_PDF_PAGES (never all at once - 8 GB GPU), up to VISION_OVERVIEW_MAX_PAGES.
+    """
+    per_call = max(1, int(getattr(settings, "VISION_MAX_PDF_PAGES", 2)))
+    limit = max(1, int(getattr(settings, "VISION_OVERVIEW_MAX_PAGES", 6)))
+    pages = list(range(1, min(page_count, limit) + 1))
+    return [pages[i:i + per_call] for i in range(0, len(pages), per_call)], max(0, page_count - limit)
+
+
 def document_images_b64(document, pages=(1,)) -> list:
     """
     Render the document (image file, or the given PDF pages) as PNGs no larger

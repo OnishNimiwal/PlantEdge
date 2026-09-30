@@ -34,6 +34,7 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'original_chars',
             'ocr_lang',
             'complex_layout',
+            'vision_fallback_pages',
             'status',
             'progress_done',
             'progress_total',

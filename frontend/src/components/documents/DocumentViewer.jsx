@@ -81,6 +81,11 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
       'Low OCR recognition confidence: the scan may be poor quality, rotated, handwritten or in a different language. Verify important values against the original.'
     );
   }
+  if (document.vision_fallback_pages > 0) {
+    limitWarnings.push(
+      `${document.vision_fallback_pages} page(s) had low OCR confidence (e.g. handwriting or a poor scan) and were transcribed by the vision model instead. A vision model can misread or invent text: verify against the original.`
+    );
+  }
   if (document.ocr_pages_skipped > 0) {
     limitWarnings.push(
       `${document.ocr_pages_skipped} scanned page(s) were not OCR'd: the limit is ${document.limits?.max_ocr_pages} OCR pages per PDF (OCR_MAX_PDF_PAGES).`

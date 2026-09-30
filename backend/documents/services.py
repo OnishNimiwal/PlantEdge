@@ -12,6 +12,8 @@ with the document image (page 1 for PDFs) instead of the OCR text.
 
 import logging
 
+from django.conf import settings
+
 
 
 from chat.model_manager import (
@@ -106,6 +108,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     decision = route_model(question, context={**signals, "image_available": has_visual})
     images = None
     vision_pages = []
+    overview, pages_not_covered = None, 0
     context_info = {"document_chars": len(document.extracted_text), "context_chars_used": 0,
                     "context_truncated": False}
     if decision["requires_image"]:
@@ -114,7 +117,11 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     elif decision["reason"] == REASON_VISION:
         page_count = document.page_count or 1
         vision_pages = processing.requested_pages(question, page_count) if document.file_type == "PDF" else [1]
-        images = processing.document_images_b64(document, vision_pages) or None
+        if (document.file_type == "PDF" and processing.wants_overview(question)
+                and page_count > getattr(settings, "VISION_MAX_PDF_PAGES", 2)):
+            overview, pages_not_covered = processing.overview_batches(page_count)
+            vision_pages = [p for batch in overview for p in batch]
+        images = processing.document_images_b64(document, vision_pages[:getattr(settings, "VISION_MAX_PDF_PAGES", 2)]) or None
         if images is None:
             # Nothing visual to look at -> answer from the text instead.
             decision = route_model("")
@@ -134,8 +141,11 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             FORMAT_HINT,
             "Text extracted from the document (may help read labels; may contain OCR errors):\n" + excerpt,
         )
-        pages_label = (f"page{'s' if len(vision_pages) > 1 else ''} {', '.join(map(str, vision_pages))} (image)"
-                       if document.file_type == "PDF" else "image")
+        if overview:
+            pages_label = f"pages {vision_pages[0]}–{vision_pages[-1]} (image, page by page)"
+        else:
+            pages_label = (f"page{'s' if len(vision_pages) > 1 else ''} {', '.join(map(str, vision_pages))} (image)"
+                           if document.file_type == "PDF" else "image")
         basis_detail = f"{document.original_name} — {pages_label}"
         pages_available = list(vision_pages) if document.file_type == "PDF" else []
     else:
@@ -166,6 +176,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     return {
         "conv": conv, "question": question, "decision": decision, "messages": messages,
         "replaced_ids": replaced_ids, "document": document, "basis_detail": basis_detail,
+        "overview": _overview_messages(document, question, overview) if overview else None,
         "pages_available": pages_available,
         "usage": {"reason": decision["reason"], "source": "document"},
         "think": think,
@@ -175,9 +186,67 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             "conversation_id": str(conv.id),
             "ollama_model": decision["model"],
             "vision_pages": vision_pages,
+            "pages_not_covered": pages_not_covered,
             "page_count": document.page_count,
         },
     }
+
+
+def _overview_messages(document, question, batches):
+    """One standalone vision request per batch of pages (sequential, so VRAM stays bounded)."""
+    out = []
+    for pages in batches:
+        label = f"page{'s' if len(pages) > 1 else ''} {', '.join(map(str, pages))}"
+        system = reliability.system_prompt(
+            "vision",
+            f"The attached image(s) show {label} of {document.page_count} of the PDF '{document.original_name}'. "
+            "Only these pages are visible to you; describe only them.",
+            FORMAT_HINT,
+        )
+        images = processing.document_images_b64(document, pages)
+        out.append((pages, [{"role": "system", "content": system},
+                            {"role": "user", "content": question, "images": images}]))
+    return out
+
+
+def _batch_header(pages, first):
+    label = f"Page {pages[0]}" if len(pages) == 1 else f"Pages {pages[0]}–{pages[-1]}"
+    return ("" if first else "\n\n") + f"### {label}\n\n"
+
+
+class OverviewStream:
+    """Streams page-batch answers one after another as a single answer (same events as ChatStream)."""
+
+    def __init__(self, batches, model_tag, usage=None, think=None):
+        self.batches, self.model_tag, self.usage, self.think = batches, model_tag, usage, think
+
+    def __iter__(self):
+        from chat.model_manager import ModelManager
+        import time
+        started, parts, last = time.monotonic(), [], {}
+        for n, (pages, messages) in enumerate(self.batches):
+            header = _batch_header(pages, n == 0)
+            parts.append(header)
+            yield {"type": "delta", "text": header}
+            for event in ModelManager().chat_stream(self.model_tag, messages, usage=self.usage, think=self.think):
+                if event["type"] == "delta":
+                    parts.append(event["text"])
+                    yield event
+                elif event["type"] == "done":
+                    last = event
+        yield {"type": "done", "response": "".join(parts).strip(), "model": last.get("model"),
+               "ollama_model": last.get("ollama_model", self.model_tag),
+               "duration_ms": int((time.monotonic() - started) * 1000)}
+
+
+def run_overview(prepared):
+    """Non-streaming overview: sequential vision calls, answers joined with page headers."""
+    parts, result = [], {}
+    for n, (pages, messages) in enumerate(prepared["overview"]):
+        result = generate_response(prepared["decision"]["model"], messages=messages,
+                                   usage=prepared["usage"], think=prepared["think"])
+        parts.append(_batch_header(pages, n == 0) + result["response"])
+    return {**result, "response": "".join(parts).strip()}
 
 
 def document_basis(document, answer, question, detail, pages_available):
@@ -225,8 +294,11 @@ def ask_document_question(document, question=None, conversation_id=None, regener
     """
     prepared = prepare_document_question(document, question, conversation_id, regenerate, think)
     try:
-        result = generate_response(prepared["decision"]["model"], messages=prepared["messages"],
-                                   usage=prepared["usage"], think=prepared["think"])
+        if prepared["overview"]:
+            result = run_overview(prepared)
+        else:
+            result = generate_response(prepared["decision"]["model"], messages=prepared["messages"],
+                                       usage=prepared["usage"], think=prepared["think"])
     except ModelManagerError as exc:
         raise OllamaServiceError(exc.public_message) from exc
     return finish_document_question(prepared, result)

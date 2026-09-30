@@ -187,6 +187,8 @@ VISION_MAX_INPUT_PIXELS = int(os.getenv('VISION_MAX_INPUT_PIXELS', str(50_000_00
 MAX_IMAGES_PER_MESSAGE = int(os.getenv('MAX_IMAGES_PER_MESSAGE', '3'))
 # PDF pages the vision model may see per question ("pages 2-3"); pages are never all sent at once.
 VISION_MAX_PDF_PAGES = int(os.getenv('VISION_MAX_PDF_PAGES', '2'))
+# "Describe all pages": pages analysed one batch after another, up to this many.
+VISION_OVERVIEW_MAX_PAGES = int(os.getenv('VISION_OVERVIEW_MAX_PAGES', '6'))
 
 # Document limits (resource protection; reported to the user when hit)
 DOCUMENT_MAX_CHARS = int(os.getenv('DOCUMENT_MAX_CHARS', '50000'))
@@ -214,6 +216,9 @@ OCR_USE_UNWARPING = _env_bool('OCR_USE_UNWARPING')
 OCR_PDF_DPI = int(os.getenv('OCR_PDF_DPI', '200'))
 OCR_MAX_PDF_PAGES = int(os.getenv('OCR_MAX_PDF_PAGES', '20'))
 OCR_CPU_THREADS = int(os.getenv('OCR_CPU_THREADS', '8'))
+# Low-confidence OCR pages (handwriting, poor scans) are re-read by the local vision model.
+OCR_VISION_FALLBACK = _env_bool('OCR_VISION_FALLBACK', True)
+OCR_VISION_FALLBACK_BELOW = float(os.getenv('OCR_VISION_FALLBACK_BELOW', '0.80'))
 # Free the OCR engine (~0.5-1 GB RAM) after this many idle seconds (0 = keep loaded).
 OCR_IDLE_UNLOAD_SECONDS = int(os.getenv('OCR_IDLE_UNLOAD_SECONDS', '600'))
 # Optional explicit PaddleOCR model names (override OCR_MODEL_PROFILE). Empty = profile default.

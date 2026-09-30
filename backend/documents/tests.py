@@ -824,3 +824,96 @@ class RetrievalAndVerificationTests(APITestCase):
         from .retrieval import build_context
         content, info = build_context("Short text.", "question", 5000)
         self.assertEqual((content, info["retrieval"]), ("Short text.", False))
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class LayoutFallbackOverviewTests(APITestCase):
+    """L19 tables/columns, L20/L18 vision fallback, L17 whole-document visual overview."""
+
+    def test_table_reconstruction(self):
+        from .ocr import reconstruct_layout
+        texts, boxes = ["Readings"], [[100, 20, 400, 45]]
+        for r, row in enumerate([["Location", "Nominal", "Measured"], ["North", "10.0", "9.6"], ["South", "10.0", "7.2"]]):
+            y = 100 + r * 60
+            for c, cell in enumerate(row):
+                texts.append(cell)
+                boxes.append([100 + c * 300, y, 200 + c * 300, y + 25])
+        text, kind = reconstruct_layout(texts, boxes)
+        self.assertEqual(kind, "table")
+        self.assertIn("| Location | Nominal | Measured |", text)
+        self.assertIn("| South | 10.0 | 7.2 |", text)
+
+    def test_two_columns_read_in_order(self):
+        from .ocr import reconstruct_layout
+        texts, boxes = [], []
+        for i in range(5):
+            texts += [f"L{i}", f"R{i}"]
+            boxes += [[80, 100 + i * 40, 500, 125 + i * 40], [680, 100 + i * 40, 1100, 125 + i * 40]]
+        text, kind = reconstruct_layout(texts, boxes)
+        self.assertEqual(kind, "columns")
+        self.assertEqual(text.split(), ["L0", "L1", "L2", "L3", "L4", "R0", "R1", "R2", "R3", "R4"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    @patch("documents.ocr.ocr_image", return_value={"text": "Pnmp P-22l0B vbratn", "lines": 1,
+                                                   "confidence": 0.61, "complex_layout": False})
+    def test_low_confidence_ocr_gets_vision_transcription(self, mock_ocr, mock_post):
+        mock_post.return_value = ok_response("Pump P-2210B vibration high.")
+        png = make_png_bytes(400, 200)
+        r = self.client.post(reverse("document-upload"), {
+            "file": SimpleUploadedFile("note.png", png, content_type="image/png")}, format="multipart")
+        doc = r.data["document"]
+        self.assertEqual(doc["vision_fallback_pages"], 1)
+        self.assertIn("(vision transcription)", doc["extracted_text"])
+        self.assertIn("Pump P-2210B vibration high.", doc["extracted_text"])
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertEqual(payload["model"], "qwen2.5vl:7b")
+        self.assertIn("Transcribe all readable text", payload["prompt"])
+
+    @override_settings(OCR_VISION_FALLBACK=False)
+    @patch("documents.ocr.ocr_image", return_value={"text": "blurry", "lines": 1, "confidence": 0.5,
+                                                   "complex_layout": False})
+    def test_fallback_can_be_disabled(self, mock_ocr):
+        r = self.client.post(reverse("document-upload"), {
+            "file": SimpleUploadedFile("note.png", make_png_bytes(), content_type="image/png")}, format="multipart")
+        self.assertEqual(r.data["document"]["vision_fallback_pages"], 0)
+
+    def test_overview_detection_and_batches(self):
+        from .processing import wants_overview, overview_batches
+        self.assertTrue(wants_overview("Describe the drawings on all pages"))
+        self.assertTrue(wants_overview("Summarise the whole document page by page"))
+        self.assertFalse(wants_overview("What does page 2 show?"))
+        self.assertEqual(overview_batches(9), ([[1, 2], [3, 4], [5, 6]], 3))
+        self.assertEqual(overview_batches(3), ([[1, 2], [3]], 0))
+
+    def _pdf_doc(self, pages=5):
+        return Document.objects.create(
+            original_name="set.pdf", file_type="PDF", extraction_method="ocr", extracted_text="x" * 30,
+            page_count=pages, file=SimpleUploadedFile("set.pdf", make_scanned_pdf_bytes(pages=pages)),
+        )
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_overview_json_runs_batches_sequentially(self, mock_post):
+        doc = self._pdf_doc(5)
+        mock_post.return_value = ok_response("A blank page.")
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "Describe the drawings on all pages."}, format="json")
+        self.assertEqual(mock_post.call_count, 3)  # pages 1-2, 3-4, 5
+        self.assertEqual([len(c.kwargs["json"]["messages"][-1]["images"]) for c in mock_post.call_args_list], [2, 2, 1])
+        self.assertIn("### Pages 1–2", r.data["answer"])
+        self.assertIn("### Page 5", r.data["answer"])
+        self.assertEqual(r.data["vision_pages"], [1, 2, 3, 4, 5])
+        self.assertIn("page by page", r.data["basis"]["detail"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_overview_stream(self, mock_post):
+        import json as _json
+        from chat.tests import ollama_stream
+        doc = self._pdf_doc(8)
+        mock_post.side_effect = lambda *a, **k: ollama_stream("Blank.")
+        r = self.client.post(reverse("document-ask-stream", kwargs={"pk": doc.id}),
+                             {"question": "Describe the drawings on every page."}, format="json")
+        events = [_json.loads(l) for l in b"".join(r.streaming_content).decode().splitlines() if l]
+        self.assertEqual(events[0]["pages_not_covered"], 2)  # 8 pages, limit 6
+        done = events[-1]
+        self.assertEqual(done["type"], "done")
+        self.assertEqual(done["answer"].count("###"), 3)

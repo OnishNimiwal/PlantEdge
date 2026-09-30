@@ -40,13 +40,48 @@ def validate_file_extension(filename: str) -> str:
 def _page_has_text(text: str) -> bool:
     return len("".join(text.split())) >= MIN_PAGE_TEXT_CHARS
 
+TRANSCRIBE_PROMPT = (
+    "Transcribe all readable text in this image exactly as written, line by line, keeping numbers and units "
+    "exactly. Do not summarise, correct, translate or add anything. Write [illegible] for parts you cannot "
+    "read. Output only the transcription."
+)
+
+
+def _vision_transcribe(image_b64):
+    """
+    Second read of a low-confidence page/image by the local vision model (handwriting,
+    poor scans). Returns the transcription, or None if unavailable. The result is marked
+    as a vision transcription because a vision model can misread or invent text.
+    """
+    from chat.model_manager import generate_response, ModelManagerError
+    try:
+        result = generate_response("qwen-vl", TRANSCRIBE_PROMPT, images=[image_b64],
+                                   usage={"reason": "vision", "source": "ocr_fallback"})
+    except ModelManagerError:
+        return None
+    text = (result.get("response") or "").strip()
+    return text or None
+
+
+def _needs_vision_fallback(result):
+    return (getattr(settings, "OCR_VISION_FALLBACK", True) and result.get("lines", 0) > 0
+            and result.get("confidence", 1.0) < getattr(settings, "OCR_VISION_FALLBACK_BELOW", 0.8))
+
+
+def _page_png_b64(page):
+    import base64
+    zoom = min(getattr(settings, "VISION_MAX_SIDE", 1024) / max(page.rect.width, page.rect.height), 3.0)
+    return base64.b64encode(page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")).decode()
+
+
 def _join_pages(pages, with_markers):
     """Join page texts; return (text, [[page_number, start_offset], ...]) for page citations."""
     parts, offsets, pos = [], [], 0
-    for num, t, via_ocr in pages:
+    for num, t, via in pages:
         if not with_markers and not t:
             continue
-        chunk = f"--- Page {num}{' (OCR)' if via_ocr else ''} ---\n{t}" if with_markers else t
+        label = {"ocr": " (OCR)", "vision": " (vision transcription)"}.get(via, "")
+        chunk = f"--- Page {num}{label} ---\n{t}" if with_markers else t
         if parts:
             pos += 2  # "\n\n" separator
         offsets.append([num, pos])
@@ -69,16 +104,17 @@ def _extract_pdf(file_bytes: bytes, lang: str = None, progress=None) -> dict:
             )
         page_count = len(doc)
 
-        pages = []  # (page_number, text, via_ocr)
+        pages = []  # (page_number, text, via: None | "ocr" | "vision")
         ocr_confidences = []
         complex_layout = False
+        vision_pages = 0
         skipped_pages = []
         for page in doc:
             if progress:
                 progress(page.number, page_count)
             page_text = page.get_text("text").strip()
             if _page_has_text(page_text):
-                pages.append((page.number + 1, page_text, False))
+                pages.append((page.number + 1, page_text, None))
             elif len(ocr_confidences) < max_ocr_pages:
                 try:
                     result = ocr.ocr_pdf_page(page, lang)
@@ -86,7 +122,13 @@ def _extract_pdf(file_bytes: bytes, lang: str = None, progress=None) -> dict:
                     raise DocumentExtractionError(str(exc)) from exc
                 ocr_confidences.append(result["confidence"])
                 complex_layout = complex_layout or result.get("complex_layout", False)
-                pages.append((page.number + 1, result["text"], True))
+                via, text_out = "ocr", result["text"]
+                if _needs_vision_fallback(result):
+                    transcribed = _vision_transcribe(_page_png_b64(page))
+                    if transcribed:
+                        via, text_out = "vision", transcribed
+                        vision_pages += 1
+                pages.append((page.number + 1, text_out, via))
             else:
                 skipped_pages.append(page.number + 1)
 
@@ -94,7 +136,7 @@ def _extract_pdf(file_bytes: bytes, lang: str = None, progress=None) -> dict:
         progress(page_count, page_count)
     ocr_pages = len(ocr_confidences)
     offsets = []
-    if not any(t.strip() for _, t, _ in pages):
+    if not any(t.strip() for _, t, _via in pages):
         text, method = "", ("ocr" if ocr_pages else "text")
     elif ocr_pages == 0:
         # Unchanged text format for normal text PDFs.
@@ -117,6 +159,7 @@ def _extract_pdf(file_bytes: bytes, lang: str = None, progress=None) -> dict:
         "page_offsets": offsets,
         "ocr_pages_skipped": len(skipped_pages),
         "complex_layout": complex_layout,
+        "vision_fallback_pages": vision_pages,
     }
 
 def _extract_image(file_bytes: bytes, file_type: str, lang: str = None) -> dict:
@@ -126,7 +169,18 @@ def _extract_image(file_bytes: bytes, file_type: str, lang: str = None) -> dict:
         result = ocr.ocr_image(file_bytes, lang)
     except ocr.OCRError as exc:
         raise DocumentExtractionError(str(exc)) from exc
+    vision_pages = 0
+    if _needs_vision_fallback(result):
+        from chat.images import prepare_image, ImageValidationError
+        try:
+            transcribed = _vision_transcribe(prepare_image(file_bytes)["b64"])
+        except ImageValidationError:
+            transcribed = None
+        if transcribed:
+            result = {**result, "text": f"--- Page 1 (vision transcription) ---\n{transcribed}"}
+            vision_pages = 1
     return {
+        "vision_fallback_pages": vision_pages,
         "text": result["text"].strip(),
         "method": "ocr",
         "ocr_pages": 1,
@@ -147,7 +201,7 @@ def extract_document(file_obj, file_type: str, lang: str = None, progress=None) 
     Enforces a strict 50,000 character limit.
     """
     result = {"text": "", "method": "text", "ocr_pages": 0, "ocr_confidence": None,
-              "page_count": 0, "ocr_pages_skipped": 0, "complex_layout": False}
+              "page_count": 0, "ocr_pages_skipped": 0, "complex_layout": False, "vision_fallback_pages": 0}
     file_obj.seek(0)
 
     if file_type == 'PDF':

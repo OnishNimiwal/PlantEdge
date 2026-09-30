@@ -857,3 +857,20 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
 }
+
+.basis-wrap {
+  margin: 0 0 0.45rem;
+}
+
+.basis-wrap .basis {
+  margin: 0;
+}
+
+.basis-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  font-size: 0.74rem;
+  color: var(--badge-amber-text);
+}
