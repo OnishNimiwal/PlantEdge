@@ -20,3 +20,19 @@ export function getUsage() {
 export function getSystemStatus() {
   return getJson('/api/dashboard/status/');
 }
+
+/** Opt-in functional test: target 'ocr' or a model id. Loads OCR / the model and runs a tiny test. */
+export async function runDeepCheck(target) {
+  try {
+    const response = await fetch(`${API_BASE}/api/dashboard/deep-check/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) return { success: false, detail: data.error || `Server error (${response.status}).` };
+    return data;
+  } catch {
+    return { success: false, detail: 'Unable to reach the workbench server.' };
+  }
+}

@@ -55,7 +55,7 @@ export default function DocumentQuestionBox({
       if (cancelled || !conv) return;
       setConversationId(conv.id);
       setMessages(conv.messages.map((m) => ({
-        id: newId(), role: m.role, text: m.content, status: 'done',
+        id: newId(), serverId: m.id, role: m.role, text: m.content, status: 'done', feedback: m.feedback || null,
         model: m.role === 'assistant' ? m.model : null,
         routing: m.role === 'assistant' ? m.routing_reason : null,
         basis: m.basis || null,
@@ -101,7 +101,7 @@ export default function DocumentQuestionBox({
       replace(msgId, {
         status: 'done', text: final.answer, model: final.ollama_model, routing: final.routing?.reason,
         routingExplanation: final.routing?.explanation, footnotes: footnotes(final, t), regenerateError: null,
-        basis: final.basis || null,
+        basis: final.basis || null, serverId: final.assistant_message_id, feedback: null,
       });
       onConversationsChanged?.();
     } else if (previous) {

@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus, CheckCircle2, Info, Pencil } from 'lucide-react';
+import {
+  RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus, CheckCircle2, Info, Pencil, ThumbsUp, ThumbsDown,
+} from 'lucide-react';
 import Markdown from './LazyMarkdown';
 import CopyButton from './CopyButton';
 import { modelMeta } from '../utils/modelLabels';
 import { useI18n } from '../utils/i18n';
+import { sendFeedback } from '../api/chatApi';
 
 /**
  * One chat turn, shared by General Chat and the Document Assistant.
@@ -94,6 +97,45 @@ function pendingLabel(message, t) {
   if (message.loadingModel) return t('Loading {model} into GPU memory', { model: message.loadingModelName || t('model') });
   if (message.thinking) return t('Thinking step by step');
   return t('Thinking');
+}
+
+/** Thumbs up / down on a stored answer (shown per model on the dashboard; an opinion, not accuracy). */
+function FeedbackButtons({ message }) {
+  const { t } = useI18n();
+  const [value, setValue] = useState(message.feedback || null);
+  useEffect(() => { setValue(message.feedback || null); }, [message.serverId, message.feedback]);
+  if (!message.serverId) return null;
+
+  const rate = async (next) => {
+    const target = value === next ? null : next; // clicking the active rating clears it
+    const before = value;
+    setValue(target);
+    if (!(await sendFeedback(message.serverId, target))) setValue(before);
+  };
+  return (
+    <>
+      <button
+        type="button"
+        className={`copy-action feedback-btn ${value === 'up' ? 'is-active' : ''}`}
+        onClick={() => rate('up')}
+        aria-pressed={value === 'up'}
+        title={t('Helpful')}
+        aria-label={t('Helpful')}
+      >
+        <ThumbsUp size={14} />
+      </button>
+      <button
+        type="button"
+        className={`copy-action feedback-btn ${value === 'down' ? 'is-active is-down' : ''}`}
+        onClick={() => rate('down')}
+        aria-pressed={value === 'down'}
+        title={t('Not helpful')}
+        aria-label={t('Not helpful')}
+      >
+        <ThumbsDown size={14} />
+      </button>
+    </>
+  );
 }
 
 /** A user message with inline editing (Save & submit replaces this turn and everything after it). */
@@ -254,7 +296,7 @@ export default function MessageBubble({ message, onImageClick, onRegenerate, onR
             </div>
             {message.footnotes?.length > 0 && (
               <div className="msg-footnotes">
-                {message.footnotes.map((f, i) => <div key={i}>{f}</div>)}
+                {message.footnotes.map((f, i) => <div key={i}>{t(f)}</div>)}
               </div>
             )}
             {message.regenerateError && (
@@ -272,6 +314,7 @@ export default function MessageBubble({ message, onImageClick, onRegenerate, onR
                     <span>{t('Regenerate')}</span>
                   </button>
                 )}
+                <FeedbackButtons message={message} />
               </div>
             )}
           </>

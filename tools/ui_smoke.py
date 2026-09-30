@@ -15,8 +15,11 @@ What it checks (each step prints PASS/FAIL; exit code 1 if any step failed):
   4. "Answer ready" is announced to screen readers
   5. editing the sent question replaces the turn (still one question + one answer)
   6. regenerating an earlier answer (not the last one) works
-  7. the Document Assistant and System Status pages render in Hindi
-  8. switching back to English restores the English interface
+  7. rating an answer (thumbs up) is stored on the server
+  8. the Document Assistant and System Status pages render in Hindi
+  9. System Status shows the 14-day trend, the per-model table and database / disk checks
+ 10. the OCR deep check passes (runs local OCR on a generated image)
+ 11. switching back to English restores the English interface
 
 Only conversations created by this run are deleted afterwards; existing data is untouched.
 """
@@ -238,7 +241,18 @@ def main():
         check("6. regenerating an earlier answer drops the later turns", regenerated,
               f"assistant messages={b.js('document.querySelectorAll(\".msg-assistant\").length')}")
 
-        # 7. Other pages in Hindi
+        # 7. Feedback
+        b.js("document.querySelector('.msg-assistant .feedback-btn').click(); true")
+        rated = b.wait("document.querySelector('.msg-assistant .feedback-btn').getAttribute('aria-pressed') === 'true'", 5)
+        time.sleep(0.5)
+        stored = False
+        for conv_id in api_conversation_ids(args.api) - before:
+            with urllib.request.urlopen(f"{args.api}/api/chat/conversations/{conv_id}/", timeout=10) as r:
+                msgs = json.load(r)["conversation"]["messages"]
+            stored = stored or any(m.get("feedback") == "up" for m in msgs)
+        check("7. rating an answer is stored", rated and stored)
+
+        # 8. Other pages in Hindi
         b.js("[...document.querySelectorAll('.nav-item')][1].click(); true")
         docs = b.wait("document.querySelector('.topbar-title')?.innerText === 'दस्तावेज़ सहायक' && !!document.querySelector('.documents-page')", 15)
         time.sleep(1)
@@ -247,11 +261,26 @@ def main():
         dash = b.wait("document.querySelector('#status-heading')?.innerText === 'सिस्टम स्थिति'", 15)
         b.wait("!document.querySelector('.status-pill.is-checking')", 20)
         shot("hindi-dashboard")
-        check("7. Document Assistant and System Status render in Hindi", docs and dash)
+        check("8. Document Assistant and System Status render in Hindi", docs and dash)
 
-        # 8. Back to English
+        # 9. Dashboard content
+        b.wait("!!document.querySelector('.trend svg')", 15)
+        has = b.js("[!!document.querySelector('.trend svg rect.trend-bar'), document.querySelectorAll('.dash-table tbody tr').length,"
+                   " [...document.querySelectorAll('.health-name')].some(e => e.innerText.includes('डेटाबेस')),"
+                   " [...document.querySelectorAll('.health-name')].some(e => e.innerText.includes('डिस्क'))]")
+        check("9. trend chart, per-model table, database and disk checks shown",
+              has and has[0] and has[1] >= 3 and has[2] and has[3], str(has))
+
+        # 10. OCR deep check (explicit button)
+        b.js("document.querySelector('.deep-checks .dash-btn').click(); true")
+        passed = b.wait("document.querySelector('.deep-checks li .status-pill')?.classList.contains('is-ready')", 180)
+        detail = b.js("document.querySelector('.deep-checks li .health-detail, .deep-checks li .health-reason')?.innerText || ''")
+        shot("hindi-dashboard-deep")
+        check("10. OCR deep check passes", passed, detail)
+
+        # 11. Back to English
         b.js("[...document.querySelectorAll('.lang-toggle button')].find(x => x.lang === 'en').click(); true")
-        check("8. switching back to English", b.wait(
+        check("11. switching back to English", b.wait(
             "document.documentElement.lang === 'en' && document.querySelector('.new-chat-btn').innerText.includes('New chat')", 5))
 
         check("no JavaScript errors during the run", not b.errors, "; ".join(b.errors[:3]))

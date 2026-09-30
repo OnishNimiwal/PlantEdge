@@ -22,6 +22,10 @@ class UsageRecord(models.Model):
     error_type = models.CharField(max_length=40, blank=True)      # e.g. ModelTimeoutError (class name only)
     duration_ms = models.PositiveIntegerField(null=True, blank=True)
     streamed = models.BooleanField(default=False)
+    regenerated = models.BooleanField(default=False)               # regenerate / edit of an earlier turn
+    # "model" = a model call; "ocr" = a request that failed before any model ran (local OCR).
+    stage = models.CharField(max_length=10, default="model", db_index=True)
+    backfilled = models.BooleanField(default=False)                # reconstructed from stored messages
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

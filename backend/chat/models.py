@@ -49,6 +49,9 @@ class ChatMessage(models.Model):
     basis_detail = models.CharField(max_length=255, blank=True)
     basis_undetermined = models.BooleanField(default=False)
     basis_warnings = models.JSONField(default=list, blank=True)  # deterministic check results
+    # User rating of an answer: "up" (helpful) / "down" (not helpful) / "" (not rated).
+    feedback = models.CharField(max_length=4, blank=True, default="")
+    feedback_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

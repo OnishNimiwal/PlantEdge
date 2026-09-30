@@ -192,6 +192,9 @@ VISION_CODING_CHAIN = os.getenv('VISION_CODING_CHAIN', 'True').lower() in ('true
 # One model request at a time on the GPU (8 GB): further requests wait up to OLLAMA_QUEUE_TIMEOUT s.
 OLLAMA_MAX_CONCURRENT = int(os.getenv('OLLAMA_MAX_CONCURRENT', '1'))
 OLLAMA_QUEUE_TIMEOUT = int(os.getenv('OLLAMA_QUEUE_TIMEOUT', '180'))
+
+# Dashboard usage rows older than this are removed by `manage.py prune_usage --apply`.
+USAGE_RETENTION_DAYS = int(os.getenv('USAGE_RETENTION_DAYS', '365'))
 # "Describe all pages": pages analysed one batch after another, up to this many.
 VISION_OVERVIEW_MAX_PAGES = int(os.getenv('VISION_OVERVIEW_MAX_PAGES', '6'))
 

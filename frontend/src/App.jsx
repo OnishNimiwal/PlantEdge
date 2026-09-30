@@ -58,7 +58,7 @@ const newId = () => `m${Date.now()}-${seq++}`;
 
 function ocrFootnote(result) {
   const withLayout = (result.ocr || []).some((o) => o.complex_layout);
-  return withLayout ? ['A table or multi-column layout was detected; reading order of the OCR text may be wrong.'] : [];
+  return withLayout ? ['A table or multi-column layout was detected; the OCR text was rebuilt as a table or columns and may still be out of order.'] : [];
 }
 
 /** Server message -> UI message */
@@ -73,6 +73,7 @@ function fromServer(conv) {
     routing: m.role === 'assistant' ? m.routing_reason : null,
     info: m.role === 'assistant' && !m.model && m.routing_reason === 'vision',
     basis: m.basis || null,
+    feedback: m.feedback || null,
     status: 'done',
   }));
 }
@@ -241,7 +242,7 @@ export default function App() {
         setConversationId(final.conversation_id);
         storeConversation(final.conversation_id);
       }
-      replaceMessage(msgId, { ...fromResult(final), regenerateError: null, serverId: final.assistant_message_id });
+      replaceMessage(msgId, { ...fromResult(final), regenerateError: null, serverId: final.assistant_message_id, feedback: null });
       if (userLocalId && final.user_message_id) replaceMessage(userLocalId, { serverId: final.user_message_id });
       refreshConversations();
     } else if (previous) {

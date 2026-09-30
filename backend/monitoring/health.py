@@ -6,12 +6,18 @@ Nothing here runs inference or loads a model into GPU memory:
              /api/ps (models currently loaded + their VRAM) - metadata only.
   - OCR:     checks the PaddleOCR package can be found and its model files are on
              disk, without importing PaddlePaddle or loading the OCR engine (~500 MB RAM).
+  - Database / disk: a trivial query and free space where uploads are stored.
 Every check has a short timeout and returns a user-safe reason, never a stack trace.
+
+deep_check() is different: it is only run when a user presses "Run deep check" on the
+dashboard, and it does load OCR / a model and run a tiny test.
 """
 
 import importlib.util
 import logging
 import os
+import shutil
+import time
 from pathlib import Path
 
 from django.conf import settings
@@ -193,6 +199,96 @@ def model_health(ollama):
     return out
 
 
+DISK_WARN_FREE_BYTES = 5 * 1024 ** 3  # uploads, OCR models and SQLite live on this disk
+DISK_WARN_FREE_FRACTION = 0.10
+
+
+def database_status():
+    from django.db import connection
+    try:
+        start = time.monotonic()
+        with connection.cursor() as cur:
+            cur.execute("SELECT 1")
+        info = {"state": "ready", "label": "Online", "latency_ms": round((time.monotonic() - start) * 1000, 1),
+                "engine": connection.vendor}
+    except Exception:
+        logger.exception("Database check failed")
+        return {"state": "unavailable", "label": "Unavailable", "reason": "The database could not be queried."}
+    name = settings.DATABASES["default"].get("NAME")
+    if connection.vendor == "sqlite" and name and os.path.exists(str(name)):
+        info["size_bytes"] = os.path.getsize(str(name))
+    return info
+
+
+def disk_status():
+    path = str(getattr(settings, "MEDIA_ROOT", "") or settings.BASE_DIR)
+    try:
+        os.makedirs(path, exist_ok=True)
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return {"state": "unavailable", "label": "Unavailable", "reason": "Disk space could not be read."}
+    info = {"total_bytes": usage.total, "free_bytes": usage.free}
+    warnings = []
+    if usage.free < DISK_WARN_FREE_BYTES or usage.free < usage.total * DISK_WARN_FREE_FRACTION:
+        warnings.append(f"Low disk space: {usage.free / 1024 ** 3:.1f} GB free. Uploads and OCR may fail when the disk is full.")
+    state, label = ("degraded", "Limited") if warnings else ("ready", "Ready")
+    return {"state": state, "label": label, "warnings": warnings, **info}
+
+
+DEEP_CHECK_TEXT = "PUMP P-101 PRESSURE 12.5 BAR"
+
+
+def _ocr_deep_check():
+    """Render a known line of text, OCR it locally, compare. Loads the OCR engine (RAM, ~seconds)."""
+    import pymupdf
+    from documents import ocr
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=520, height=90)
+    page.insert_text((20, 55), DEEP_CHECK_TEXT, fontsize=24)
+    png = page.get_pixmap(matrix=pymupdf.Matrix(2, 2)).tobytes("png")
+    doc.close()
+    start = time.monotonic()
+    result = ocr.ocr_image(png)
+    ms = round((time.monotonic() - start) * 1000)
+    read = " ".join((result.get("text") or "").split()).upper()
+    ok = all(word in read for word in DEEP_CHECK_TEXT.split())
+    return {"target": "ocr", "success": ok, "duration_ms": ms,
+            "detail": f'Read "{read[:80]}"' + ("" if ok else f' (expected "{DEEP_CHECK_TEXT}")'),
+            "confidence": result.get("confidence")}
+
+
+def _model_deep_check(model_id):
+    """A tiny generation on one model (loads it into GPU memory if needed). Not counted as usage."""
+    from chat.model_manager import generate_response
+    from chat.model_registry import get_model
+
+    model = get_model(model_id)
+    start = time.monotonic()
+    result = generate_response(model.ollama_name, "Reply with exactly the word: OK", think=False)
+    ms = round((time.monotonic() - start) * 1000)
+    answer = (result.get("response") or "").strip()
+    ok = "OK" in answer.upper()
+    return {"target": model_id, "success": ok, "duration_ms": ms,
+            "detail": f'Answered "{answer[:40]}"' + ("" if ok else " (expected OK)")}
+
+
+def deep_check(target):
+    """Run one opt-in functional test: "ocr" or a registered model id. Returns a user-safe result."""
+    from chat.model_registry import list_models
+
+    if target != "ocr" and target not in {m.id for m in list_models()}:
+        raise ValueError("Unknown check target.")
+    try:
+        result = _ocr_deep_check() if target == "ocr" else _model_deep_check(target)
+    except Exception as exc:
+        logger.info("Deep check failed: target=%s (%s)", target, type(exc).__name__)
+        message = str(exc) if exc.__class__.__module__.startswith(("chat.", "documents.")) else "The check could not be completed."
+        result = {"target": target, "success": False, "detail": message}
+    result["checked_at"] = timezone.now()
+    return result
+
+
 def full_status():
     ollama = ollama_status()
     status = {
@@ -202,6 +298,8 @@ def full_status():
             "ollama": {k: v for k, v in ollama.items() if k not in ("installed", "loaded")},
             "ocr": ocr_status(),
             "gpu": gpu_status(),
+            "database": database_status(),
+            "disk": disk_status(),
         },
         "models": model_health(ollama),
     }

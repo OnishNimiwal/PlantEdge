@@ -266,6 +266,7 @@ def serialize(conv) -> dict:
                 "model": m.model or None,
                 "routing_reason": m.routing_reason or None,
                 "basis": _basis_out(m),
+                "feedback": m.feedback or None,
                 "images": [a.file.url for a in m.attachments.all()],
                 "created_at": m.created_at,
             }

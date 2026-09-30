@@ -141,6 +141,8 @@ def prepare_turn(data, image_info):
         try:
             ocr_out = processing.ocr_images(data["images"])
         except processing.OCRError as exc:
+            from monitoring.usage import record_failure
+            record_failure("ocr", "chat", exc, selection["reason"])
             return _error(f"Local OCR failed: {exc}", status.HTTP_503_SERVICE_UNAVAILABLE, model_id, routing), None
         extra_context, ocr_info = ocr_out["text"], ocr_out["results"]
         if selection["reason"] == REASON_OCR_TEXT:
@@ -171,7 +173,8 @@ def prepare_turn(data, image_info):
         "basis_kind": "code" if chain else reliability.chat_basis_kind(
             selection["reason"], any(m.get("images") for m in messages), bool(extra_context), model_obj,
         ),
-        "usage": {"reason": selection["reason"], "source": "chat"},
+        "usage": {"reason": selection["reason"], "source": "chat",
+                  "regenerated": bool(data.get("regenerate") or data.get("edit_from"))},
         "think": data.get("think"),
     }
 
@@ -457,6 +460,27 @@ class ConversationDetailAPIView(APIView):
     def delete(self, request, pk):
         deleted, _ = Conversation.objects.filter(pk=pk).delete()
         return Response({"success": bool(deleted)}, status=200 if deleted else 404)
+
+
+class MessageFeedbackAPIView(APIView):
+    """
+    POST /api/chat/messages/<id>/feedback/ {"value": "up" | "down" | null} - the user's rating
+    of an answer (null clears it). Shown per model on the dashboard; it is an opinion, not accuracy.
+    """
+
+    def post(self, request, pk):
+        from django.utils import timezone
+        from .models import ChatMessage
+
+        value = request.data.get("value")
+        if value not in ("up", "down", None, ""):
+            return Response({"success": False, "error": 'value must be "up", "down" or null.'}, status=400)
+        updated = ChatMessage.objects.filter(pk=pk, role="assistant").update(
+            feedback=value or "", feedback_at=timezone.now() if value else None,
+        )
+        if not updated:
+            return Response({"success": False, "error": "Answer not found."}, status=404)
+        return Response({"success": True, "id": pk, "feedback": value or None})
 
 
 class ModelWarmupAPIView(APIView):

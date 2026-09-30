@@ -181,7 +181,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
         "replaced_ids": replaced_ids, "document": document, "basis_detail": basis_detail,
         "overview": _overview_messages(document, question, overview) if overview else None,
         "pages_available": pages_available,
-        "usage": {"reason": decision["reason"], "source": "document"},
+        "usage": {"reason": decision["reason"], "source": "document", "regenerated": bool(regenerate)},
         "think": think,
         "meta": {
             "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
@@ -277,11 +277,14 @@ def finish_document_question(prepared, result) -> dict:
                            prepared["basis_detail"], prepared["pages_available"])
     chat_context.discard(prepared["replaced_ids"])
     # The document image is re-rendered on demand, so it is not stored as an attachment.
-    chat_context.record_turn(prepared["conv"], prepared["question"], result["response"],
-                             model_tag=result["ollama_model"], reason=prepared["decision"]["reason"],
-                             basis=basis)
+    user_msg, assistant_msg = chat_context.record_turn(
+        prepared["conv"], prepared["question"], result["response"],
+        model_tag=result["ollama_model"], reason=prepared["decision"]["reason"], basis=basis,
+    )
     return {
         "answer": result["response"],
+        "user_message_id": user_msg.id,
+        "assistant_message_id": assistant_msg.id,
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "basis": basis,

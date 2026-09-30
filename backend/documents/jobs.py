@@ -73,11 +73,15 @@ def process(doc_id, lang):
         finally:
             doc.file.close()
     except DocumentExtractionError as exc:
+        from monitoring.usage import record_failure
+        record_failure("extraction", "document", exc)
         Document.objects.filter(pk=doc_id).update(status=Document.STATUS_FAILED, processing_error=str(exc))
         logger.info("Document job failed: doc_id=%s (%s)", doc_id, exc)
         return
-    except Exception:
+    except Exception as exc:
         logger.exception("Document job error: doc_id=%s", doc_id)
+        from monitoring.usage import record_failure
+        record_failure("extraction", "document", exc)
         Document.objects.filter(pk=doc_id).update(
             status=Document.STATUS_FAILED, processing_error="The document could not be processed.",
         )

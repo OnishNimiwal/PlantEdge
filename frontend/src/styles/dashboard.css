@@ -306,3 +306,84 @@
   font-size: 0.8rem;
   color: var(--badge-amber-text);
 }
+
+/* ---- Trend, per-model table, deep checks -------------------------------- */
+
+.dash-section > .dash-card,
+.dash-section > .dash-columns { margin-top: 0.75rem; }
+
+.trend { margin: 0; }
+.trend svg { width: 100%; height: auto; max-height: 200px; display: block; }
+.trend-bg { fill: var(--bg-subtle); }
+.trend-bar { fill: var(--accent-primary); }
+.trend-fail { fill: var(--danger); }
+.trend-label { font-size: 10px; fill: var(--text-muted); }
+
+.trend figcaption {
+  margin-top: 0.5rem;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.trend-key {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-left: 0.4rem;
+}
+
+.trend-key.is-ok { background: var(--accent-primary); }
+.trend-key.is-fail { background: var(--danger); }
+
+.dash-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.dash-table th,
+.dash-table td {
+  padding: 0.45rem 0.6rem;
+  text-align: right;
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+
+.dash-table th:first-child,
+.dash-table td:first-child { text-align: left; }
+
+.dash-table thead th {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.dash-table tbody th { font-weight: 550; color: var(--text-primary); }
+.dash-table td.is-bad { color: var(--danger); }
+
+.rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.rating svg:nth-of-type(2) { margin-left: 0.45rem; }
+
+.dash-footnote.is-warn { color: var(--badge-amber-text); }
+
+.deep-checks h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.deep-check-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}

@@ -246,3 +246,17 @@ export function warmUp(model) {
     body: JSON.stringify({ model }),
   }).catch(() => {});
 }
+
+/** Rate an answer: 'up' | 'down' | null (clear). Returns true on success. */
+export async function sendFeedback(messageId, value) {
+  try {
+    const response = await fetch(`${API_BASE}/api/chat/messages/${messageId}/feedback/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}

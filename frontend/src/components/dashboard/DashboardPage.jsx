@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   RefreshCw, Activity, CheckCircle2, XCircle, CalendarDays, Server, Cpu, ScanText, AlertTriangle, Gauge,
+  Database, HardDrive, ThumbsUp, ThumbsDown, FlaskConical, Loader2,
 } from 'lucide-react';
 import { useI18n } from '../../utils/i18n';
-import { getUsage, getSystemStatus } from '../../api/dashboardApi';
+import { getUsage, getSystemStatus, runDeepCheck } from '../../api/dashboardApi';
 import { modelLabel } from '../../utils/modelLabels';
 
 const CATEGORY_LABELS = { general: 'General', coding: 'Coding', vision: 'Vision' };
@@ -49,6 +50,89 @@ function BarList({ rows, total }) {
         );
       })}
     </ul>
+  );
+}
+
+function formatMs(ms) {
+  if (ms == null) return '—';
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** Requests per day for the last 14 days (failed part in red), with average response time on hover. */
+function TrendChart({ days }) {
+  const { t, lang } = useI18n();
+  const max = Math.max(1, ...days.map((d) => d.total));
+  const W = 900; const H = 110; const pad = 18; const gap = 8;
+  const bw = (W - gap * (days.length - 1)) / days.length;
+  const locale = lang === 'hi' ? 'hi-IN' : undefined;
+  const label = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(locale, { day: 'numeric', month: 'short' });
+  const total = days.reduce((n, d) => n + d.total, 0);
+  return (
+    <figure className="trend">
+      <svg viewBox={`0 0 ${W} ${H + pad}`} role="img"
+        aria-label={t('Requests per day, last 14 days: {n} in total', { n: total })}>
+        {days.map((d, i) => {
+          const x = i * (bw + gap);
+          const h = (d.total / max) * H;
+          const hf = (d.failed / max) * H;
+          return (
+            <g key={d.date}>
+              <title>{`${label(d.date)}: ${t('{n} requests', { n: d.total })}${d.failed ? `, ${t('{n} failed', { n: d.failed })}` : ''}${d.avg_ms != null ? ` · ${t('avg')} ${formatMs(d.avg_ms)}` : ''}`}</title>
+              <rect className="trend-bg" x={x} y={0} width={bw} height={H} rx={3} />
+              {h > 0 && <rect className="trend-bar" x={x} y={H - h} width={bw} height={h} rx={3} />}
+              {hf > 0 && <rect className="trend-fail" x={x} y={H - hf} width={bw} height={hf} rx={3} />}
+              {(i % 2 === 1 || days.length <= 7) && (
+                <text className="trend-label" x={x + bw / 2} y={H + 13} textAnchor="middle">{label(d.date)}</text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <figcaption>
+        <span className="trend-key is-ok" /> {t('Requests')} <span className="trend-key is-fail" /> {t('Failed')}
+        {' · '}{t('peak {n} per day', { n: max })}
+      </figcaption>
+    </figure>
+  );
+}
+
+function ModelTable({ rows }) {
+  const { t } = useI18n();
+  return (
+    <div className="md-table-wrap">
+      <table className="dash-table">
+        <thead>
+          <tr>
+            <th scope="col">{t('Model')}</th>
+            <th scope="col">{t('Requests')}</th>
+            <th scope="col">{t('Failed')}</th>
+            <th scope="col">{t('Average response time')}</th>
+            <th scope="col">{t('Regenerated')}</th>
+            <th scope="col">{t('User ratings')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((m) => {
+            const rated = (m.feedback?.up || 0) + (m.feedback?.down || 0);
+            return (
+              <tr key={m.model}>
+                <th scope="row">{modelLabel(m.model)}</th>
+                <td>{m.queries.toLocaleString()}</td>
+                <td className={m.failed ? 'is-bad' : ''}>{m.failed.toLocaleString()}</td>
+                <td>{formatMs(m.avg_ms)}</td>
+                <td>{(m.regenerated || 0).toLocaleString()}</td>
+                <td>
+                  <span className="rating" title={rated ? t('{pct}% rated helpful', { pct: Math.round((m.feedback.up / rated) * 100) }) : t('No ratings yet')}>
+                    <ThumbsUp size={12} aria-label={t('Helpful')} /> {m.feedback?.up || 0}
+                    <ThumbsDown size={12} aria-label={t('Not helpful')} /> {m.feedback?.down || 0}
+                  </span>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -110,6 +194,16 @@ function UsageSection() {
             <StatCard icon={XCircle} label={t('Failed')} value={usage.failed_queries} tone={usage.failed_queries ? 'is-bad' : ''} />
             <StatCard icon={CalendarDays} label={t('Today')} value={usage.today} />
           </div>
+          {usage.trend?.length > 0 && (
+            <div className="dash-card">
+              <h3>{t('Last 14 days')}</h3>
+              <TrendChart days={usage.trend} />
+            </div>
+          )}
+          <div className="dash-card">
+            <h3>{t('Per model')}</h3>
+            <ModelTable rows={usage.model_details || []} />
+          </div>
           <div className="dash-columns">
             <div className="dash-card">
               <h3>{t('Model usage')}</h3>
@@ -120,6 +214,19 @@ function UsageSection() {
               <BarList rows={routingRows} total={usage.total_queries} />
             </div>
           </div>
+          {Object.keys(usage.pre_model_failures || {}).length > 0 && (
+            <p className="dash-footnote is-warn">
+              <AlertTriangle size={13} />{' '}
+              {Object.entries(usage.pre_model_failures).map(([stage, n]) => (
+                stage === 'ocr' ? t('{n} request(s) failed in local OCR before any model ran.', { n })
+                  : t('{n} document(s) failed during text extraction.', { n })
+              )).join(' ')}
+            </p>
+          )}
+          <p className="dash-footnote">
+            {t('User ratings are opinions from the 👍/👎 buttons, not a measured accuracy.')}
+            {usage.backfilled > 0 && ` ${t('{n} older requests were reconstructed from stored answers (no timing).', { n: usage.backfilled })}`}
+          </p>
           <p className="dash-footnote">
             {t('Recorded since {date} · includes chat, document Q&A and summaries · failed = the model call did not complete.',
               { date: new Date(usage.first_recorded).toLocaleString(lang === 'hi' ? 'hi-IN' : undefined) })}
@@ -149,6 +256,8 @@ function StatusSection() {
     { key: 'ollama', icon: Cpu, name: 'Ollama' },
     { key: 'ocr', icon: ScanText, name: t('OCR Engine') },
     { key: 'gpu', icon: Gauge, name: t('GPU & power') },
+    { key: 'database', icon: Database, name: t('Database') },
+    { key: 'disk', icon: HardDrive, name: t('Disk space') },
   ];
 
   const serviceState = (key) => {
@@ -184,7 +293,15 @@ function StatusSection() {
                     s.memory_total_mb ? t('{used} / {total} GB used', { used: (s.memory_used_mb / 1024).toFixed(1), total: (s.memory_total_mb / 1024).toFixed(1) }) : null,
                     s.temperature_c != null ? `${Math.round(s.temperature_c)} °C` : null,
                     s.power_source === 'ac' ? t('on mains power') : s.power_source === 'battery' ? t('on battery') : null,
-                  ].filter(Boolean).join(' · ') : null;
+                  ].filter(Boolean).join(' · ')
+                    : key === 'database' && s.engine ? [
+                      s.engine === 'sqlite' ? 'SQLite' : s.engine,
+                      s.size_bytes != null ? `${(s.size_bytes / 1024 ** 2).toFixed(1)} MB` : null,
+                      s.latency_ms != null ? `${s.latency_ms} ms` : null,
+                    ].filter(Boolean).join(' · ')
+                      : key === 'disk' && s.total_bytes ? t('{free} GB free of {total} GB', {
+                        free: (s.free_bytes / 1024 ** 3).toFixed(1), total: (s.total_bytes / 1024 ** 3).toFixed(0),
+                      }) : null;
               return (
                 <li key={key}>
                   <div className="health-row">
@@ -231,10 +348,62 @@ function StatusSection() {
           </p>
         </div>
       </div>
+      <DeepChecks models={status?.models} />
       {status?.checked_at && !checking && (
         <p className="dash-footnote">{t('Checked {time}', { time: new Date(status.checked_at).toLocaleTimeString(lang === 'hi' ? 'hi-IN' : undefined) })}</p>
       )}
     </section>
+  );
+}
+
+/** Opt-in functional tests: each runs only when its button is pressed. */
+function DeepChecks({ models }) {
+  const { t } = useI18n();
+  const [results, setResults] = useState({});
+  const [running, setRunning] = useState(null);
+  const targets = [{ id: 'ocr', label: t('OCR Engine') },
+    ...(models || []).map((m) => ({ id: m.id, label: modelLabel(m.id) }))];
+
+  const run = async (id) => {
+    setRunning(id);
+    const r = await runDeepCheck(id);
+    setResults((prev) => ({ ...prev, [id]: r }));
+    setRunning(null);
+  };
+
+  return (
+    <div className="dash-card deep-checks">
+      <h3><FlaskConical size={15} /> {t('Deep checks')}</h3>
+      <p className="dash-footnote">
+        {t('Runs a real test: OCR reads a generated line of text, or a model answers a one-word prompt. Loads the model into GPU memory (can take 10–60 s) and is not counted as usage.')}
+      </p>
+      <ul className="health-list">
+        {targets.map(({ id, label }) => {
+          const r = results[id];
+          return (
+            <li key={id}>
+              <div className="health-row">
+                <span className="health-name">{label}</span>
+                <span className="deep-check-actions">
+                  {r && (
+                    <StatusPill state={r.success ? 'ready' : 'unavailable'} label={r.success ? 'Passed' : 'Failed'} />
+                  )}
+                  <button type="button" className="dash-btn" disabled={running !== null} onClick={() => run(id)}>
+                    {running === id ? <Loader2 size={14} className="spin" /> : null}
+                    {running === id ? t('Running…') : t('Run test')}
+                  </button>
+                </span>
+              </div>
+              {r && (
+                <div className={r.success ? 'health-detail' : 'health-reason'}>
+                  {r.detail}{r.duration_ms != null ? ` · ${formatMs(r.duration_ms)}` : ''}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

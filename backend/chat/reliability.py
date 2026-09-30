@@ -109,6 +109,17 @@ _UNDETERMINED = [re.compile(p, re.IGNORECASE) for p in (
     r"(?:specify|mention|state|contain|include|provide|show|indicate)",
     r"(?:i do not|i don't|there is not|there isn't) (?:have )?enough information",
     r"not possible to determine",
+    r"(?:i|we) (?:could not|couldn't|cannot|can't|was unable to|am unable to) (?:find|locate|see|identify)",
+    r"(?:is|are|was|were) not (?:found|present|available) in the (?:provided |uploaded |attached |supplied )?"
+    r"(?:document|image|text|report|picture|photo|drawing)",
+    r"(?:no|does not contain any|doesn't contain any|contains no) (?:information|mention|data|details?) "
+    r"(?:about|on|regarding|of|for)\b",
+    r"the (?:provided |uploaded |attached |supplied )?(?:document|image|report|text|picture|photo) doesn't "
+    r"(?:specify|mention|state|contain|include|provide|show|indicate)",
+    # Hindi answers (UI language "hi")
+    r"(?:दस्तावेज़|दस्तावेज|चित्र|तस्वीर|छवि|रिपोर्ट|टेक्स्ट)\s+में\s+(?:\S+\s+){0,4}?(?:नहीं\s+(?:दी|दिया|बताया|बताई|है|हैं|मिली|मिला)|उल्लेख\s+नहीं)",
+    r"(?:जानकारी|विवरण|मान)\s+(?:उपलब्ध\s+)?नहीं\s+(?:है|हैं|मिली|मिला|दी\s+गई|दिया\s+गया)",
+    r"(?:निर्धारित|पता)\s+नहीं\s+(?:किया\s+जा\s+सकता|लगाया\s+जा\s+सकता|चल\s+सकता)",
 )]
 
 # Only the opening of an answer is checked, so a long answer that notes one

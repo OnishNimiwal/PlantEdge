@@ -50,7 +50,7 @@ class UsageRecordingTests(APITestCase):
         row = UsageRecord.objects.values().get()
         self.assertNotIn("SECRET", json.dumps(row, default=str))
         self.assertEqual(set(row), {"id", "model", "category", "reason", "source", "success", "error_type",
-                                    "duration_ms", "streamed", "created_at"})
+                                    "duration_ms", "streamed", "regenerated", "stage", "backfilled", "created_at"})
 
     @patch(POST)
     def test_failures_recorded_without_details(self, mock_post):
@@ -235,3 +235,135 @@ class GpuStatusTests(APITestCase):
         from . import health
         with patch("shutil.which", return_value=None):
             self.assertEqual(health.gpu_status()["state"], "unavailable")
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class FeedbackTrendBackfillTests(APITestCase):
+    def setUp(self):
+        from chat.tests import start_loaded_patchers
+        start_loaded_patchers()
+
+    def chat(self, body):
+        return self.client.post(reverse("chat"), body, format="json")
+
+    @patch(POST, return_value=ollama_ok("answer"))
+    def test_feedback_roundtrip_and_helpfulness(self, _):
+        from chat.models import ChatMessage
+        r = self.chat({"message": "Explain federated learning."})
+        answer_id = r.data["assistant_message_id"]
+        url = reverse("message-feedback", kwargs={"pk": answer_id})
+        self.assertEqual(self.client.post(url, {"value": "up"}, format="json").status_code, 200)
+        self.assertEqual(ChatMessage.objects.get(pk=answer_id).feedback, "up")
+        conv = self.client.get(reverse("conversation-detail", kwargs={"pk": r.data["conversation_id"]}))
+        self.assertEqual(conv.data["conversation"]["messages"][1]["feedback"], "up")
+        usage = self.client.get(reverse("dashboard-usage")).data
+        qwen3 = next(m for m in usage["model_details"] if m["model"] == "qwen3:8b")
+        self.assertEqual(qwen3["feedback"], {"up": 1, "down": 0})
+        self.assertEqual(usage["feedback"], {"up": 1, "down": 0})
+        # clear, invalid value, user message, unknown id
+        self.client.post(url, {"value": None}, format="json")
+        self.assertEqual(ChatMessage.objects.get(pk=answer_id).feedback, "")
+        self.assertEqual(self.client.post(url, {"value": "meh"}, format="json").status_code, 400)
+        user_id = r.data["user_message_id"]
+        self.assertEqual(self.client.post(reverse("message-feedback", kwargs={"pk": user_id}),
+                                          {"value": "up"}, format="json").status_code, 404)
+
+    @patch(POST, return_value=ollama_ok("answer"))
+    def test_regenerate_is_flagged(self, _):
+        r = self.chat({"message": "Explain federated learning."})
+        self.chat({"conversation_id": r.data["conversation_id"], "regenerate": True})
+        self.assertEqual(list(UsageRecord.objects.order_by("id").values_list("regenerated", flat=True)), [False, True])
+        self.assertEqual(self.client.get(reverse("dashboard-usage")).data["regenerated"], 1)
+
+    def test_trend_has_fourteen_zero_filled_days(self):
+        UsageRecord.objects.create(model="qwen3:8b", category="general", success=True, duration_ms=1000)
+        UsageRecord.objects.create(model="qwen3:8b", category="general", success=False)
+        old = UsageRecord.objects.create(model="qwen3:8b", category="general", success=True, duration_ms=3000)
+        UsageRecord.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=3))
+        UsageRecord.objects.create(model="paddleocr", category="vision", success=False, stage="ocr")
+        trend = self.client.get(reverse("dashboard-usage")).data["trend"]
+        self.assertEqual(len(trend), 14)
+        self.assertEqual(trend[-1], {"date": trend[-1]["date"], "total": 2, "failed": 1, "avg_ms": 1000})
+        self.assertEqual(trend[-4]["total"], 1)
+        self.assertEqual(sum(d["total"] for d in trend), 3)  # the OCR failure is not a model call
+
+    @patch("documents.processing.ocr_images", side_effect=__import__("documents.ocr", fromlist=["OCRError"]).OCRError("x"))
+    def test_ocr_failure_before_model_is_recorded(self, _):
+        r = self.chat({"message": "Read the text in this scanned document.", "images": [PNG_B64]})
+        self.assertEqual(r.status_code, 503)
+        row = UsageRecord.objects.get()
+        self.assertEqual((row.stage, row.success, row.model), ("ocr", False, "paddleocr"))
+        usage = self.client.get(reverse("dashboard-usage")).data
+        self.assertEqual(usage["total_queries"], 0)
+        self.assertEqual(usage["pre_model_failures"], {"ocr": 1})
+
+    def test_backfill_dry_run_then_apply_is_idempotent(self):
+        from io import StringIO
+        from django.core.management import call_command
+        from chat.models import Conversation, ChatMessage
+        conv = Conversation.objects.create(title="old")
+        ChatMessage.objects.create(conversation=conv, role="user", content="q")
+        ChatMessage.objects.create(conversation=conv, role="assistant", content="def f(): pass",
+                                   model="qwen2.5-coder:7b", routing_reason="coding")
+        out = StringIO()
+        call_command("backfill_usage", stdout=out)
+        self.assertIn("Dry run", out.getvalue())
+        self.assertEqual(UsageRecord.objects.count(), 0)
+        call_command("backfill_usage", "--apply", stdout=StringIO())
+        row = UsageRecord.objects.get()
+        self.assertEqual((row.model, row.category, row.backfilled), ("qwen2.5-coder:7b", "coding", True))
+        self.assertEqual(ChatMessage.objects.get(role="assistant").basis, "code")
+        call_command("backfill_usage", "--apply", stdout=StringIO())
+        self.assertEqual(UsageRecord.objects.count(), 1)
+
+    def test_prune_respects_dry_run_and_retention(self):
+        from io import StringIO
+        from django.core.management import call_command
+        old = UsageRecord.objects.create(model="qwen3:8b", category="general", success=True)
+        UsageRecord.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(days=400))
+        UsageRecord.objects.create(model="qwen3:8b", category="general", success=True)
+        call_command("prune_usage", stdout=StringIO())
+        self.assertEqual(UsageRecord.objects.count(), 2)
+        call_command("prune_usage", "--apply", stdout=StringIO())
+        self.assertEqual(UsageRecord.objects.count(), 1)
+
+
+class DatabaseDiskDeepCheckTests(APITestCase):
+    def test_database_and_disk_reported(self):
+        from . import health
+        db = health.database_status()
+        self.assertEqual(db["state"], "ready")
+        disk = health.disk_status()
+        self.assertIn(disk["state"], ("ready", "degraded"))
+        self.assertGreater(disk["total_bytes"], 0)
+
+    def test_low_disk_warns(self):
+        from collections import namedtuple
+        from . import health
+        du = namedtuple("du", "total used free")
+        with patch("monitoring.health.shutil.disk_usage", return_value=du(100 * 1024 ** 3, 99 * 1024 ** 3, 1024 ** 3)):
+            disk = health.disk_status()
+        self.assertEqual(disk["state"], "degraded")
+        self.assertIn("Low disk space", disk["warnings"][0])
+
+    def test_deep_check_validates_target(self):
+        url = reverse("dashboard-deep-check")
+        self.assertEqual(self.client.post(url, {}, format="json").status_code, 400)
+        self.assertEqual(self.client.post(url, {"target": "gpt-4"}, format="json").status_code, 400)
+
+    @patch(POST, return_value=ollama_ok("OK"))
+    def test_model_deep_check_is_not_counted_as_usage(self, mock_post):
+        r = self.client.post(reverse("dashboard-deep-check"), {"target": "qwen3"}, format="json")
+        self.assertTrue(r.data["success"])
+        self.assertEqual(UsageRecord.objects.count(), 0)
+
+    @patch(POST, side_effect=requests.exceptions.ConnectionError("secret-host refused"))
+    def test_model_deep_check_failure_is_user_safe(self, _):
+        r = self.client.post(reverse("dashboard-deep-check"), {"target": "qwen3"}, format="json")
+        self.assertFalse(r.data["success"])
+        self.assertNotIn("secret-host", r.data["detail"])
+
+    @patch("documents.ocr.ocr_image", return_value={"text": "PUMP P-101 PRESSURE 12.5 BAR", "confidence": 0.99})
+    def test_ocr_deep_check(self, _):
+        r = self.client.post(reverse("dashboard-deep-check"), {"target": "ocr"}, format="json")
+        self.assertTrue(r.data["success"], r.data)
