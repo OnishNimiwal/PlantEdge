@@ -24,6 +24,13 @@ negative     - phrases that neutralise a keyword used in a non-technical sense.
 
 CODING_STRONG = [
     r"```",                                            # code block
+    # Bug descriptions without the word "code" (L7: "my loop never ends")
+    r"\b(?:infinite|endless)\s+loop\b",
+    r"\bloop\s+(?:never|doesn't|does\s+not|won't|will\s+not)\s+(?:end|ends|stop|stops|terminate|finish)\b",
+    r"\b(?:it|my\s+\w+)\s+(?:throws|segfaults|won't\s+compile|doesn't\s+compile)\b",
+    r"\breturns?\s+(?:none|null|undefined|nan)\b",
+    r"\b(?:null|nil)\s+pointer\b|\bundefined\s+is\s+not\b|\bindentation\s+error\b",
+    r"\b(?:pip|npm|yarn)\s+(?:install|run)\b|\bregex\b|\bregular\s+expression\b",
     r"traceback \(most recent call last\)",
     r"\b[A-Z][a-z]+(?:Error|Exception)\b",             # SyntaxError, NullPointerException
     r"\bstack ?trace\b",
@@ -129,3 +136,8 @@ VISUAL_QUESTION = [
     r"\bdiagram\b", r"\bdrawing\b", r"\bp&id\b", r"\bphoto\b", r"\bpicture\b", r"\bsymbols?\b",
     r"\bvisual\w*\b", r"\bidentify\b", r"\bdamage\w*\b", r"\bcorro\w+ (?:visible|shown)\b",
 ]
+
+# Pasted code: share of lines that look like code (see router._code_likeness).
+CODE_LINE = r"^\s*(?:def |class |import |from \S+ import |return\b|if .*:$|for .*:$|while .*:$|#include|" \
+            r"(?:public|private|static)\s|function\s|const |let |var |SELECT\s|INSERT\s|UPDATE\s)" \
+            r"|[;{}]\s*$|\w+\s*\(.*\)\s*[:{;]?\s*$|^\s{4,}\S|==|!=|=>|->"

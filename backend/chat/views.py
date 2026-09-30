@@ -22,8 +22,9 @@ from .model_manager import (
     ModelNotInstalledError,
     NonLocalEndpointError,
     ModelResourceError,
+    ModelBusyError,
 )
-from .router import route_model, REASON_OCR_TEXT
+from .router import route_model, REASON_OCR_TEXT, REASON_VISION_CODING
 from . import context as ctx
 from . import reliability
 from documents import processing
@@ -37,6 +38,7 @@ ERROR_STATUS = {
     NonLocalEndpointError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ModelResourceError: status.HTTP_503_SERVICE_UNAVAILABLE,
     ModelTimeoutError: status.HTTP_504_GATEWAY_TIMEOUT,
+    ModelBusyError: status.HTTP_503_SERVICE_UNAVAILABLE,
 }
 
 NEEDS_IMAGE_MESSAGE = (
@@ -135,16 +137,21 @@ def prepare_turn(data, image_info):
         selection["reason"], model_obj, bool(images_for_model) or signals.get("image_available", False),
     )
     system = reliability.system_prompt(mode, getattr(settings, "CHAT_SYSTEM_PROMPT", "")) or None
+    chain = selection["reason"] == REASON_VISION_CODING and bool(data.get("images"))
+    if chain:
+        images_for_model = None  # the coder receives the vision model's description instead
     messages, context_info = ctx.build_messages(
         conv, data["message"], selection["model"], new_images=images_for_model,
         extra_context=extra_context, exclude_ids=replaced_ids, system=system,
     )
     return None, {
+        "chain": chain,
+        "system": system,
         "conv": conv, "data": data, "selection": selection, "model_id": model_id,
         "routing": routing, "messages": messages, "context_info": context_info,
         "extra_context": extra_context, "ocr_info": ocr_info, "image_info": image_info,
         "replaced_ids": replaced_ids,
-        "basis_kind": reliability.chat_basis_kind(
+        "basis_kind": "code" if chain else reliability.chat_basis_kind(
             selection["reason"], any(m.get("images") for m in messages), bool(extra_context), model_obj,
         ),
         "usage": {"reason": selection["reason"], "source": "chat"},
@@ -158,9 +165,56 @@ def _thinking_enabled(turn):
     return bool(model.supports_thinking and think)
 
 
+DESCRIBE_FOR_CODE = (
+    "Describe precisely everything in the attached image(s) that is relevant to the request below: visible "
+    "text, labels, numbers, table contents, structure, layout and relationships. Do not write code. "
+    "Only describe what is visible; say if something cannot be determined.\n\nRequest: {message}"
+)
+
+
+def describe_images_for_code(turn):
+    """
+    Step 1 of the vision -> coder chain: the vision model describes the image(s); the
+    description is added to the coder's prompt. Updates turn["messages"] / extra_context.
+    """
+    data = turn["data"]
+    result = generate_response(
+        "qwen-vl",
+        messages=[{"role": "system", "content": reliability.system_prompt("vision")},
+                  {"role": "user", "content": DESCRIBE_FOR_CODE.format(message=data["message"]),
+                   "images": data["images"]}],
+        usage={"reason": "vision", "source": "chat"},
+    )
+    turn["extra_context"] = (
+        "=== DESCRIPTION OF THE ATTACHED IMAGE(S) (by the local vision model; may be incomplete) ===\n"
+        f"{result['response']}\n=== END DESCRIPTION ==="
+    )
+    turn["messages"], turn["context_info"] = ctx.build_messages(
+        turn["conv"], data["message"], turn["selection"]["model"], new_images=None,
+        extra_context=turn["extra_context"], exclude_ids=turn["replaced_ids"], system=turn["system"],
+    )
+    turn["chain"] = False
+
+
+class ChainedStream:
+    """Vision -> coder chain for streaming: a 'stage' event, the vision step, then the coder stream."""
+
+    def __init__(self, turn):
+        self.turn = turn
+
+    def __iter__(self):
+        yield {"type": "stage", "stage": "vision", "label": "Reading the image with Qwen2.5-VL 7B"}
+        describe_images_for_code(self.turn)
+        yield {"type": "stage", "stage": "coding", "label": "Writing code with Qwen2.5-Coder 7B"}
+        yield from ModelManager().chat_stream(self.turn["selection"]["model"], self.turn["messages"],
+                                              usage=self.turn["usage"], think=self.turn["think"])
+
+
 def finish_turn(turn, result):
     """Persist the exchange (replacing a regenerated turn) and build the response body."""
     detail = "with OCR text" if turn["basis_kind"] == "image" and turn["extra_context"] else ""
+    if turn["selection"]["reason"] == REASON_VISION_CODING and turn["extra_context"]:
+        detail = "from the vision model's description of the image"
     basis = reliability.basis(turn["basis_kind"], result["response"], detail)
     basis["warnings"] = []
     if turn["basis_kind"] == "image_text" and not basis["undetermined"]:
@@ -214,6 +268,8 @@ class ChatAPIView(APIView):
         if early is not None:
             return early
         try:
+            if turn["chain"]:
+                describe_images_for_code(turn)
             # Execution: the execution layer decides HOW to call it (local Ollama only).
             result = generate_response(turn["selection"]["model"], messages=turn["messages"], usage=turn["usage"],
                                        think=turn["think"])
@@ -255,8 +311,11 @@ class StreamNegotiation(BaseContentNegotiation):
         return renderers[0], renderers[0].media_type
 
 
-def streaming_response(generator):
+def streaming_response(generator, opened=None):
     response = StreamingHttpResponse(generator, content_type="application/x-ndjson")
+    # Release the GPU slot even if the client disconnects before the stream is read.
+    if hasattr(opened, "_release"):
+        response._resource_closers.append(opened._release)
     response["Cache-Control"] = "no-cache"
     response["X-Accel-Buffering"] = "no"  # disable proxy buffering (e.g. nginx)
     return response
@@ -283,15 +342,18 @@ class ChatStreamAPIView(APIView):
         # Tell the UI when the model still has to be loaded into GPU memory (~12-16 s).
         model_loading = turn["selection"]["model"] not in loaded_models()
         try:
-            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"], usage=turn["usage"],
-                                                think=turn["think"])
+            if turn["chain"]:
+                opened = ChainedStream(turn)
+            else:
+                opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"], usage=turn["usage"],
+                                                    think=turn["think"])
         except Exception as exc:
             return _model_error(exc, turn)
         meta = {"conversation_id": str(turn["conv"].id), "routing": turn["routing"],
                 "ollama_model": turn["selection"]["model"], "ocr": turn["ocr_info"], "images": turn["image_info"],
                 "model_loading": model_loading, "thinking_enabled": _thinking_enabled(turn)}
         # The turn is stored only when the stream completes (a dropped connection stores nothing).
-        return streaming_response(ndjson_stream(opened, meta, lambda event: finish_turn(turn, event)))
+        return streaming_response(ndjson_stream(opened, meta, lambda event: finish_turn(turn, event)), opened)
 
 
 class RouteAPIView(APIView):

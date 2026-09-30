@@ -358,9 +358,11 @@ class RouterTests(APITestCase):
         )
 
     def test_attached_image_forces_vision(self):
-        decision = route_model("Write Python code for this.", has_images=True)
+        decision = route_model("Describe this.", has_images=True)
         self.assertEqual(decision["reason"], "vision")
         self.assertEqual(decision["model_id"], "qwen-vl")
+        chain = route_model("Write Python code for this.", has_images=True)  # image + coding -> VL then Coder
+        self.assertEqual((chain["reason"], chain["model_id"]), ("vision_coding", "qwen-coder"))
 
     def test_empty_message_is_general(self):
         self.assertEqual(route_model("")["reason"], "general_reasoning")
@@ -593,7 +595,7 @@ class RoutingRulesTests(APITestCase):
         ("Be careful about drawing conclusions from a single reading.", {}, False, "general_reasoning", False),
         ("What colour is the pipe?", {}, False, "general_reasoning", False),
         ("What colour is the pipe?", {"image_available": True}, False, "vision", False),
-        ("Analyze this image and write Python code to extract the detected objects.", {}, True, "vision", False),
+        ("Analyze this image and write Python code to extract the detected objects.", {}, True, "vision_coding", False),
         ("Analyze this image and write Python code to extract the detected objects.", {}, False, "vision", True),
         ("Write a Python function to resize an image.", {}, False, "coding", False),
         ("There is rust on the pipe flange, is it serious?", {}, False, "general_reasoning", False),
@@ -981,6 +983,7 @@ class StreamNegotiationTests(APITestCase):
                              HTTP_ACCEPT="application/x-ndjson")
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.streaming)
+        b"".join(r.streaming_content)
         mock_post.side_effect = requests.exceptions.ConnectionError()
         r = self.client.post(reverse("chat-stream"), {"message": "hi"}, format="json",
                              HTTP_ACCEPT="application/x-ndjson")
@@ -1127,3 +1130,74 @@ class PostChecksTests(APITestCase):
         mock_post.return_value = ollama_ok("```python\ndef f(): return 1\n```\nThis should return 1.")
         r = self.client.post(reverse("chat"), {"message": "Write a Python function."}, format="json")
         self.assertEqual(r.data["basis"]["warnings"], [])
+
+
+class VisionCodingChainAndQueueTests(APITestCase):
+    """L8 vision -> coder chain; GPU request queue; L7 paraphrase signals."""
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_chain_json(self, mock_post):
+        mock_post.side_effect = [ollama_ok("A table with columns Name and Value."), ollama_ok("```python\nrows=[]\n```")]
+        r = self.client.post(reverse("chat"), {"message": "Write Python code to parse the table in this image.",
+                                               "images": [PNG_B64]}, format="json")
+        self.assertEqual(r.data["routing"]["reason"], "vision_coding")
+        vl, coder = [c.kwargs["json"] for c in mock_post.call_args_list]
+        self.assertEqual(vl["model"], "qwen2.5vl:7b")
+        self.assertEqual(vl["messages"][-1]["images"], [PNG_B64])
+        self.assertEqual(coder["model"], "qwen2.5-coder:7b")
+        self.assertTrue(all("images" not in m for m in coder["messages"]))
+        self.assertIn("columns Name and Value", coder["messages"][-1]["content"])
+        self.assertEqual(r.data["basis"]["type"], "code")
+        self.assertIn("vision model's description", r.data["basis"]["detail"])
+        from monitoring.models import UsageRecord
+        self.assertEqual(list(UsageRecord.objects.order_by("id").values_list("model", "category")),
+                         [("qwen2.5vl:7b", "vision"), ("qwen2.5-coder:7b", "coding")])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_chain_stream_emits_stages(self, mock_post):
+        import json as _json
+        mock_post.side_effect = [ollama_ok("A bar chart."), ollama_stream("import ", "matplotlib")]
+        r = self.client.post(reverse("chat-stream"), {"message": "Write Python code to recreate this chart.",
+                                                      "images": [PNG_B64]}, format="json")
+        events = [_json.loads(l) for l in b"".join(r.streaming_content).decode().splitlines() if l]
+        types = [e["type"] for e in events]
+        self.assertEqual(types[:3], ["start", "stage", "stage"])
+        self.assertEqual(events[-1]["response"], "import matplotlib")
+
+    def test_paraphrased_coding_requests(self):
+        for m in ("My loop never ends, what is wrong?", "The function returns None instead of a list.",
+                  "It throws when the list is empty.", "Help me write a regex for tag numbers like P-101A.",
+                  "for i in range(10):\n    print(i)\n    x = i * 2\nwhy is x wrong?"):
+            with self.subTest(m=m):
+                self.assertEqual(route_model(m)["reason"], "coding")
+        for m in ("Describe the operating loop of the cooling water system.", "The inspection returned no findings."):
+            with self.subTest(m=m):
+                self.assertEqual(route_model(m)["reason"], "general_reasoning")
+
+    @override_settings(OLLAMA_QUEUE_TIMEOUT=1)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_queue_busy_returns_clean_503(self, mock_post):
+        from . import model_manager as mm
+        mock_post.return_value = ollama_ok("ok")
+        mm._inflight_begin()  # another request holds the only GPU slot
+        try:
+            r = self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        finally:
+            mm._inflight_end()
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("busy", r.data["error"])
+        mock_post.assert_not_called()
+        self.assertEqual(self.client.post(reverse("chat"), {"message": "hi"}, format="json").status_code, 200)
+
+
+class UnreadStreamTests(APITestCase):
+    @override_settings(OLLAMA_QUEUE_TIMEOUT=2)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_unread_stream_releases_gpu_slot_on_close(self, mock_post):
+        from . import model_manager as mm
+        mock_post.return_value = ollama_stream("never read")
+        r = self.client.post(reverse("chat-stream"), {"message": "hi"}, format="json")
+        r.close()  # e.g. the browser disconnected before reading
+        self.assertEqual(mm._inflight, 0)
+        mock_post.return_value = ollama_ok("next")
+        self.assertEqual(self.client.post(reverse("chat"), {"message": "hi"}, format="json").status_code, 200)

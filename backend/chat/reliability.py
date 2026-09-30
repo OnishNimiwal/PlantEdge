@@ -67,6 +67,7 @@ REASON_MODE = {
     "vision": "vision",
     "vision_ocr": "vision",
     "ocr_text": "image_text",
+    "vision_coding": "coding",
 }
 CAPABILITY_MODE = {"reasoning": "general", "coding": "coding", "vision": "vision"}
 

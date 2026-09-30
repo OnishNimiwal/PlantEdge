@@ -206,7 +206,7 @@ class DocumentAskStreamView(APIView):
         return streaming_response(ndjson_stream(
             opened, {**prepared["meta"], "model_loading": model_loading},
             lambda event: finish_document_question(prepared, event),
-        ))
+        ), opened)
 
 class DocumentSummaryView(APIView):
     def post(self, request, pk):

@@ -213,6 +213,8 @@ export default function App() {
           });
         } else if (ev.type === 'thinking') {
           replaceMessage(msgId, { loadingModel: false, thinking: true });
+        } else if (ev.type === 'stage') {
+          replaceMessage(msgId, { loadingModel: false, stage: ev.label });
         } else if (ev.type === 'delta') {
           acc += ev.text;
           if (!flushTimer) flushTimer = setTimeout(flush, 50);

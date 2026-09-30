@@ -18,6 +18,7 @@ const ROUTING_LABELS = {
   vision: 'Vision',
   ocr_text: 'Document text · OCR',
   vision_ocr: 'Vision + OCR',
+  vision_coding: 'Image → Code',
   manual: 'Selected manually',
 };
 

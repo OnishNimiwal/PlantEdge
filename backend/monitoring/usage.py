@@ -24,6 +24,7 @@ REASON_CATEGORY = {
     "coding": UsageRecord.CATEGORY_CODING,
     "vision": UsageRecord.CATEGORY_VISION,
     "vision_ocr": UsageRecord.CATEGORY_VISION,
+    "vision_coding": UsageRecord.CATEGORY_CODING,   # the vision pre-step is recorded as vision
 }
 CAPABILITY_CATEGORY = {
     "reasoning": UsageRecord.CATEGORY_GENERAL,

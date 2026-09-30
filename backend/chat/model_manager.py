@@ -56,6 +56,10 @@ class ModelResourceError(ModelManagerError):
     )
 
 
+class ModelBusyError(ModelManagerError):
+    public_message = "The local AI is busy with other requests. Please try again in a moment."
+
+
 class NonLocalEndpointError(ModelManagerError):
     public_message = "Local AI server is misconfigured."
 
@@ -145,8 +149,26 @@ _inflight = 0
 _warming = set()
 
 
+_gpu_slots = None
+
+
+def _slots():
+    global _gpu_slots
+    if _gpu_slots is None:
+        _gpu_slots = threading.BoundedSemaphore(max(1, int(getattr(settings, "OLLAMA_MAX_CONCURRENT", 1))))
+    return _gpu_slots
+
+
 def _inflight_begin():
+    """
+    Take a GPU slot (queue) - with 8 GB VRAM one model request at a time avoids two
+    different models evicting each other or running out of memory. Waits up to
+    OLLAMA_QUEUE_TIMEOUT seconds, then raises ModelBusyError.
+    """
     global _inflight
+    if not _slots().acquire(timeout=int(getattr(settings, "OLLAMA_QUEUE_TIMEOUT", 180))):
+        logger.warning("Inference queue timeout: another request is still using the GPU")
+        raise ModelBusyError()
     with _state_lock:
         _inflight += 1
 
@@ -154,7 +176,10 @@ def _inflight_begin():
 def _inflight_end():
     global _inflight
     with _state_lock:
-        _inflight = max(0, _inflight - 1)
+        if _inflight == 0:
+            return
+        _inflight -= 1
+    _slots().release()
 
 
 def loaded_models(timeout=2) -> dict:
@@ -323,6 +348,12 @@ class ModelManager:
         }
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
         try:
+            _inflight_begin()
+        except ModelBusyError as exc:
+            from monitoring.usage import record
+            record(model, usage, False, error=exc, streamed=True)
+            raise
+        try:
             response, started = self._send("/api/chat", payload, model, prompt_chars, image_count, stream=True)
         except ModelManagerError as exc:
             _inflight_end()
@@ -332,6 +363,7 @@ class ModelManager:
         return ChatStream(model, response, started, usage)
 
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
+        _inflight_begin()
         try:
             response, started = self._send(endpoint, payload, model, prompt_chars, image_count)
             data = response.json()
@@ -350,9 +382,8 @@ class ModelManager:
     def _send(self, endpoint, payload, model, prompt_chars, image_count, stream=False):
         """
         POST to local Ollama and validate the status. Returns (response, started).
-        Counts as an in-flight request (see warm_up); the caller ends it.
+        The caller holds a GPU slot (_inflight_begin) around it and releases it.
         """
-        _inflight_begin()
         # Log metadata only - never prompt or image contents.
         estimated = int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE
         logger.info(

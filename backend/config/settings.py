@@ -187,6 +187,11 @@ VISION_MAX_INPUT_PIXELS = int(os.getenv('VISION_MAX_INPUT_PIXELS', str(50_000_00
 MAX_IMAGES_PER_MESSAGE = int(os.getenv('MAX_IMAGES_PER_MESSAGE', '3'))
 # PDF pages the vision model may see per question ("pages 2-3"); pages are never all sent at once.
 VISION_MAX_PDF_PAGES = int(os.getenv('VISION_MAX_PDF_PAGES', '2'))
+# Image + coding request: vision model describes the image, then Coder writes the code (two models).
+VISION_CODING_CHAIN = os.getenv('VISION_CODING_CHAIN', 'True').lower() in ('true', '1', 'yes')
+# One model request at a time on the GPU (8 GB): further requests wait up to OLLAMA_QUEUE_TIMEOUT s.
+OLLAMA_MAX_CONCURRENT = int(os.getenv('OLLAMA_MAX_CONCURRENT', '1'))
+OLLAMA_QUEUE_TIMEOUT = int(os.getenv('OLLAMA_QUEUE_TIMEOUT', '180'))
 # "Describe all pages": pages analysed one batch after another, up to this many.
 VISION_OVERVIEW_MAX_PAGES = int(os.getenv('VISION_OVERVIEW_MAX_PAGES', '6'))
 

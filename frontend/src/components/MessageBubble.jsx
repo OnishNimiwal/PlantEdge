@@ -54,6 +54,7 @@ function useElapsed(since, active) {
 }
 
 function pendingLabel(message) {
+  if (message.stage) return message.stage;
   if (message.loadingModel) return `Loading ${message.loadingModelName || 'model'} into GPU memory`;
   if (message.thinking) return 'Thinking step by step';
   return 'Thinking';

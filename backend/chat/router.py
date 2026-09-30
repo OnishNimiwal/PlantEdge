@@ -21,6 +21,8 @@ Decision order (first match wins) - see route_model() for the reasoning:
 import logging
 import re
 
+from django.conf import settings
+
 from . import routing_rules as rules
 from .model_registry import get_model
 
@@ -31,6 +33,7 @@ REASON_VISION = "vision"
 REASON_GENERAL = "general_reasoning"
 REASON_OCR_TEXT = "ocr_text"        # attached image of a document: OCR -> text model
 REASON_VISION_OCR = "vision_ocr"    # visual + text task: image AND OCR text -> vision model
+REASON_VISION_CODING = "vision_coding"  # image + coding task: VL describes the image, then Coder writes code
 
 # Routing reason -> model id in MODEL_REGISTRY
 ROUTE_TARGETS = {
@@ -39,6 +42,7 @@ ROUTE_TARGETS = {
     REASON_GENERAL: "qwen3",
     REASON_OCR_TEXT: "qwen3",
     REASON_VISION_OCR: "qwen-vl",
+    REASON_VISION_CODING: "qwen-coder",   # final model; the vision model runs first (chat/views.py)
 }
 # Reasons whose pipeline runs local OCR on the attached images first.
 OCR_REASONS = {REASON_OCR_TEXT, REASON_VISION_OCR}
@@ -60,6 +64,15 @@ _FOLLOWUP = _compile(rules.FOLLOWUP_MARKERS)
 _TEXT_EXTRACTION = _compile(rules.TEXT_EXTRACTION)
 _DOCUMENT_TEXT_TASK = _compile(rules.DOCUMENT_TEXT_TASK)
 _VISUAL_QUESTION = _compile(rules.VISUAL_QUESTION)
+_CODE_LINE = re.compile(rules.CODE_LINE, re.IGNORECASE)
+
+
+def _code_likeness(message):
+    """True for pasted code: 3+ lines of which at least 40% look like code."""
+    lines = [l for l in (message or "").splitlines() if l.strip()]
+    if len(lines) < 3:
+        return False
+    return sum(1 for l in lines if _CODE_LINE.search(l)) / len(lines) >= 0.4
 
 
 def _hits(patterns, text):
@@ -88,9 +101,12 @@ def analyze(message: str) -> dict:
     strong = _hits(_CODING_STRONG, cleaned)
     weak = _hits(_CODING_WEAK, cleaned)
     code_action = bool(_CODE_ACTIONS.search(cleaned))
+    if _code_likeness(message):
+        strong = strong + ["<pasted code>"]
     coding = bool(strong) or len(weak) >= 2 or (bool(weak) and code_action)
     return {
         "coding": coding,
+        "coding_strong": bool(strong),
         "coding_hits": strong + weak,
         "negated": negated,
         "vision_target": _hits(_VISION_TARGET, message) + _hits(_VISION_ACTIONS, message),
@@ -130,12 +146,15 @@ def route_model(message: str, has_images: bool = False, context: dict = None) ->
     elif has_images and text_task and visual_q:
         reason = REASON_VISION_OCR
         explanation = "text and visual task: the vision model gets the image and its OCR text"
+    elif has_images and s["coding_strong"] and getattr(settings, "VISION_CODING_CHAIN", True):
+        # Mixed vision + coding: the coder cannot see, so the vision model first
+        # describes the image, then the coder writes the code from that description.
+        reason = REASON_VISION_CODING
+        explanation = "image + coding request: the vision model describes the image, then Coder writes the code"
     elif has_images:
         reason = REASON_VISION
         explanation = "image attached"
         if s["coding"]:
-            # Mixed vision + coding: the coder cannot see, so the VL model answers
-            # both parts in one step (a VL -> coder chain is future work).
             explanation = "image attached; mixed vision+coding request handled by the vision model"
     elif image_available and (vision_words or s["vision_target_if_available"]
                               or (s["visual_properties"] and not s["coding"])):
@@ -161,6 +180,7 @@ def route_model(message: str, has_images: bool = False, context: dict = None) ->
         REASON_VISION: s["vision_target"] + s["text_extraction"] + s["visual_properties"],
         REASON_OCR_TEXT: s["text_extraction"] + s["document_text_task"],
         REASON_VISION_OCR: s["document_text_task"] + s["visual_question"] + s["visual_properties"],
+        REASON_VISION_CODING: s["coding_hits"] + s["vision_target"],
         REASON_GENERAL: [],
     }[reason]
     # Matches come from fixed rule patterns (short phrases), not free-form prompt text.
