@@ -42,6 +42,28 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
     );
   }
 
+  if (document.status && document.status !== 'ready') {
+    const failed = document.status === 'failed';
+    return (
+      <div className="doc-viewer-empty doc-processing" role="status" aria-live="polite">
+        {failed ? <AlertTriangle size={40} /> : <Loader2 size={40} className="spin-icon" />}
+        <h3>{failed ? 'Processing failed' : 'Processing document…'}</h3>
+        <p>
+          {failed
+            ? document.processing_error || 'The document could not be processed.'
+            : document.progress_total
+              ? `Reading page ${Math.min(document.progress_done + 1, document.progress_total)} of ${document.progress_total}. Scanned pages take a few seconds each.`
+              : 'Extracting text. Scanned pages are read with local OCR.'}
+        </p>
+        {failed && (
+          <button className="action-btn danger" onClick={() => onDelete(document.id)}>
+            <Trash2 size={15} /> <span>Remove</span>
+          </button>
+        )}
+      </div>
+    );
+  }
+
   const maxChars = document.limits?.max_chars || 50000;
   const limitWarnings = [];
   if (document.truncated) {

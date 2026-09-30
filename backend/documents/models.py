@@ -2,6 +2,13 @@ import os
 from django.db import models
 
 class Document(models.Model):
+    STATUS_QUEUED = "queued"
+    STATUS_PROCESSING = "processing"
+    STATUS_READY = "ready"
+    STATUS_FAILED = "failed"
+    STATUS_CHOICES = [(STATUS_QUEUED, "Queued"), (STATUS_PROCESSING, "Processing"),
+                      (STATUS_READY, "Ready"), (STATUS_FAILED, "Failed")]
+
     file = models.FileField(upload_to="documents/%Y/%m/")
     original_name = models.CharField(max_length=255)
     file_type = models.CharField(max_length=10)  # 'PDF', 'TXT', 'PNG' or 'JPG'
@@ -16,6 +23,13 @@ class Document(models.Model):
     original_chars = models.PositiveIntegerField(default=0)
     ocr_lang = models.CharField(max_length=10, blank=True)       # PaddleOCR language used
     complex_layout = models.BooleanField(default=False)           # table / multi-column detected
+    # Background processing (documents/jobs.py)
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_READY)
+    progress_done = models.PositiveIntegerField(default=0)
+    progress_total = models.PositiveIntegerField(default=0)
+    processing_error = models.CharField(max_length=300, blank=True)
+    # Character offset where each PDF page starts in extracted_text (page-level citations).
+    page_offsets = models.JSONField(default=list, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

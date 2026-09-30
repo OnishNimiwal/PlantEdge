@@ -86,6 +86,8 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
+        # Wait for a lock instead of failing when the document worker and a request write at once.
+        'OPTIONS': {'timeout': 20},
     }
 }
 
@@ -152,8 +154,14 @@ OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '300'))
 OLLAMA_NUM_CTX = int(os.getenv('OLLAMA_NUM_CTX', '8192'))
 # Qwen3 "thinking": empty = model default (on), "false" = answer directly (faster,
 # less step-by-step reasoning), "true" = force on. Only affects thinking-capable models.
-_think = os.getenv('OLLAMA_THINK', '').strip().lower()
+# Default is OFF for speed (39 s -> 3 s on a simple question); users can turn it on per
+# message with "Think deeper" (request field `think: true`).
+_think = os.getenv('OLLAMA_THINK', 'false').strip().lower()
 OLLAMA_THINK = {'true': True, '1': True, 'yes': True, 'false': False, '0': False, 'no': False}.get(_think)
+# How long Ollama keeps the last-used model in GPU memory (Ollama's default is 5m).
+OLLAMA_KEEP_ALIVE = os.getenv('OLLAMA_KEEP_ALIVE', '30m')
+# Load a model ahead of the request (page open, image attached, model picked) when idle.
+OLLAMA_WARMUP = os.getenv('OLLAMA_WARMUP', 'True').lower() in ('true', '1', 'yes')
 
 # Reliability instructions (chat/reliability.py) added to every model's system message.
 # Reduces unsupported claims; it cannot eliminate hallucinations.
@@ -183,6 +191,8 @@ VISION_MAX_PDF_PAGES = int(os.getenv('VISION_MAX_PDF_PAGES', '2'))
 # Document limits (resource protection; reported to the user when hit)
 DOCUMENT_MAX_CHARS = int(os.getenv('DOCUMENT_MAX_CHARS', '50000'))
 DOCUMENT_MAX_PDF_PAGES = int(os.getenv('DOCUMENT_MAX_PDF_PAGES', '300'))
+# Extract text / run OCR in a background worker so uploads return immediately.
+DOCUMENT_ASYNC_PROCESSING = os.getenv('DOCUMENT_ASYNC_PROCESSING', 'True').lower() in ('true', '1', 'yes')
 
 # Local OCR (PaddleOCR on CPU; see documents/ocr.py and samples/ocr_benchmark.py)
 def _env_bool(name, default=False):
@@ -192,8 +202,9 @@ OCR_LANG = os.getenv('OCR_LANG', 'en')
 # Languages users may choose per upload (PaddleOCR codes: en, hi, mr, ka, ta, te, ml, ch, latin).
 # Each extra language downloads its own recognition model once, then runs offline.
 OCR_ALLOWED_LANGS = [l.strip() for l in os.getenv('OCR_ALLOWED_LANGS', OCR_LANG).split(',') if l.strip()]
-# server = PaddleOCR default models (most accurate, ~25 s/page on CPU); mobile = ~4x faster
-OCR_MODEL_PROFILE = os.getenv('OCR_MODEL_PROFILE', 'server')
+# mobile = default (~6 s/page on CPU, same accuracy as server on the benchmark scans);
+# server = PaddleOCR's larger models (~20 s/page). Non-English languages always use their own models.
+OCR_MODEL_PROFILE = os.getenv('OCR_MODEL_PROFILE', 'mobile')
 # Optional preprocessing models (see samples/ocr_benchmark.py). Page-orientation correction
 # is on: it fixed 90/180-degree rotated scans (accuracy 0.15 -> 1.00) at ~no speed cost.
 # Text-line orientation did not help; unwarping targets photographed curved pages.
@@ -203,6 +214,8 @@ OCR_USE_UNWARPING = _env_bool('OCR_USE_UNWARPING')
 OCR_PDF_DPI = int(os.getenv('OCR_PDF_DPI', '200'))
 OCR_MAX_PDF_PAGES = int(os.getenv('OCR_MAX_PDF_PAGES', '20'))
 OCR_CPU_THREADS = int(os.getenv('OCR_CPU_THREADS', '8'))
+# Free the OCR engine (~0.5-1 GB RAM) after this many idle seconds (0 = keep loaded).
+OCR_IDLE_UNLOAD_SECONDS = int(os.getenv('OCR_IDLE_UNLOAD_SECONDS', '600'))
 # Optional explicit PaddleOCR model names (override OCR_MODEL_PROFILE). Empty = profile default.
 OCR_DET_MODEL = os.getenv('OCR_DET_MODEL', '')
 OCR_REC_MODEL = os.getenv('OCR_REC_MODEL', '')

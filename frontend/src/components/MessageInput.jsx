@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { ArrowUp, Paperclip, X, Loader2 } from 'lucide-react';
+import { ArrowUp, Paperclip, X, Loader2, Brain } from 'lucide-react';
 import ModelSelector from './ModelSelector';
 
 // Large images exhaust the 8 GB GPU in the vision model. The backend enforces the
@@ -40,6 +40,10 @@ const MessageInput = forwardRef(function MessageInput(
     allowAttachments = true,
     showModelPicker = true,
     placeholder = 'Ask anything…',
+    think = false,
+    onThinkChange,
+    thinkAvailable = true,
+    onImagesAttached,
     footnote = 'Runs on-premise with local models. Responses can contain mistakes — verify important information.',
   },
   ref,
@@ -122,6 +126,7 @@ const MessageInput = forwardRef(function MessageInput(
     try {
       const resized = await Promise.all(files.slice(0, Math.max(room, 0)).map((f) => resizeImage(f, maxSide)));
       setImages((prev) => [...prev, ...resized]);
+      onImagesAttached?.(); // e.g. start loading the vision model while the user types
     } catch (err) {
       setImageError(err.message);
     }
@@ -188,6 +193,20 @@ const MessageInput = forwardRef(function MessageInput(
             )}
             {showModelPicker && (
               <ModelSelector models={models} value={selectedModel} onChange={onModelChange} disabled={busy} />
+            )}
+            {onThinkChange && thinkAvailable && (
+              <button
+                type="button"
+                className={`think-toggle ${think ? 'is-on' : ''}`}
+                onClick={() => onThinkChange(!think)}
+                aria-pressed={think}
+                title={think
+                  ? 'Think deeper is on: step-by-step reasoning, slower answers'
+                  : 'Think deeper: step-by-step reasoning for hard questions (slower)'}
+              >
+                <Brain size={15} />
+                <span>{think ? 'Thinking on' : 'Think deeper'}</span>
+              </button>
             )}
           </div>
           <button

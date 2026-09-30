@@ -9,8 +9,9 @@ const DocumentsPage = lazy(() => import('./components/documents/DocumentsPage'))
 const DashboardPage = lazy(() => import('./components/dashboard/DashboardPage'));
 import {
   streamMessage, fetchModels, getConversation, listConversations,
-  renameConversation, deleteConversation,
+  renameConversation, deleteConversation, warmUp,
 } from './api/chatApi';
+import { modelLabel } from './utils/modelLabels';
 
 const CONVERSATION_KEY = 'mrpl.chat.conversationId';
 const THEME_KEY = 'mrpl.theme';
@@ -108,6 +109,7 @@ export default function App() {
   const [models, setModels] = useState([]);
   const [limits, setLimits] = useState(null);
   const [selectedModel, setSelectedModel] = useState('auto');
+  const [think, setThink] = useState(false); // "Think deeper" (Qwen3 reasoning) for the next messages
   const composerRef = useRef(null);
 
   const refreshConversations = useCallback(() => {
@@ -174,6 +176,7 @@ export default function App() {
     fetchModels().then((data) => {
       setModels(data.models || []);
       setLimits(data.limits || null);
+      warmUp(data.default || 'qwen3'); // load the default model while the user reads/types
     });
     refreshConversations();
     const stored = readStoredConversation();
@@ -196,7 +199,7 @@ export default function App() {
       replaceMessage(msgId, { status: 'streaming', text: acc });
     };
     const final = await streamMessage(
-      { message: text, model: selectedModel, images, conversationId, regenerate },
+      { message: text, model: selectedModel, images, conversationId, regenerate, think },
       (ev) => {
         if (ev.type === 'start') {
           if (ev.conversation_id && ev.conversation_id !== conversationId) {
@@ -206,7 +209,10 @@ export default function App() {
           replaceMessage(msgId, {
             model: ev.ollama_model, routing: ev.routing?.reason,
             routingExplanation: ev.routing?.explanation, ocr: ev.ocr || null,
+            loadingModel: Boolean(ev.model_loading), loadingModelName: modelLabel(ev.ollama_model),
           });
+        } else if (ev.type === 'thinking') {
+          replaceMessage(msgId, { loadingModel: false, thinking: true });
         } else if (ev.type === 'delta') {
           acc += ev.text;
           if (!flushTimer) flushTimer = setTimeout(flush, 50);
@@ -240,7 +246,7 @@ export default function App() {
     setMessages((prev) => [
       ...prev,
       { id: newId(), role: 'user', text, images },
-      { id: pendingId, role: 'assistant', status: 'pending' },
+      { id: pendingId, role: 'assistant', status: 'pending', startedAt: Date.now() },
     ]);
     streamTurn({ text, images }, pendingId);
   };
@@ -248,14 +254,14 @@ export default function App() {
   // A failed turn is not stored by the backend, so retrying just sends it again.
   const handleRetry = (msg) => {
     if (busy || !msg.retry) return;
-    replaceMessage(msg.id, { status: 'pending', error: null, text: '' });
+    replaceMessage(msg.id, { status: 'pending', error: null, text: '', startedAt: Date.now() });
     streamTurn(msg.retry, msg.id);
   };
 
   const handleRegenerate = (msg) => {
     if (busy || !conversationId) return;
     const previous = { ...msg };
-    replaceMessage(msg.id, { status: 'pending', text: '', regenerateError: null, ocr: null });
+    replaceMessage(msg.id, { status: 'pending', text: '', regenerateError: null, ocr: null, startedAt: Date.now() });
     streamTurn({ regenerate: true }, msg.id, previous);
   };
 
@@ -361,8 +367,12 @@ export default function App() {
                 busy={busy}
                 models={models}
                 selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
+                onModelChange={(m) => { setSelectedModel(m); warmUp(m); }}
                 limits={limits}
+                think={think}
+                onThinkChange={setThink}
+                thinkAvailable={selectedModel === 'auto' || selectedModel === 'qwen3'}
+                onImagesAttached={() => warmUp('qwen-vl')}
               />
             </div>
           </main>

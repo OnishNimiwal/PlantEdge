@@ -191,3 +191,47 @@ class SystemStatusTests(APITestCase):
         shutil.rmtree(empty, ignore_errors=True)
         self.assertEqual(d["services"]["ocr"]["state"], "unavailable")
         self.assertIn("not found", d["services"]["ocr"]["reason"])
+
+
+_sync_override = override_settings(DOCUMENT_ASYNC_PROCESSING=False)
+
+
+def setUpModule():
+    from chat.tests import start_loaded_patchers
+    start_loaded_patchers()
+    _sync_override.enable()
+
+
+def tearDownModule():
+    from chat.tests import stop_loaded_patchers
+    stop_loaded_patchers()
+    _sync_override.disable()
+
+
+class GpuStatusTests(APITestCase):
+    CSV = ("NVIDIA GeForce RTX 5050 Laptop GPU, 595.84, 6075, 8151, {util}, 53, 9.2, {limit}, 55.00, 180, 3090, "
+           "{cap}, Not Active, Not Active, P8")
+
+    def run_with(self, util=99, limit="10.00", cap="Active", source="battery"):
+        from . import health
+        proc = Mock(stdout=self.CSV.format(util=util, limit=limit, cap=cap))
+        with patch("shutil.which", return_value="/usr/bin/nvidia-smi"), \
+                patch("subprocess.run", return_value=proc), \
+                patch.object(health, "_power_source", return_value=source):
+            return health.gpu_status()
+
+    def test_battery_power_cap_is_reported(self):
+        g = self.run_with()
+        self.assertEqual((g["state"], g["label"]), ("degraded", "Limited"))
+        self.assertTrue(any("battery" in w for w in g["warnings"]))
+        self.assertTrue(any("10 W" in w for w in g["warnings"]))
+
+    def test_healthy_on_ac(self):
+        g = self.run_with(util=0, limit="55.00", cap="Not Active", source="ac")
+        self.assertEqual(g["state"], "ready")
+        self.assertEqual(g["memory_total_mb"], 8151)
+
+    def test_no_nvidia_smi(self):
+        from . import health
+        with patch("shutil.which", return_value=None):
+            self.assertEqual(health.gpu_status()["state"], "unavailable")

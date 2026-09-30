@@ -13,6 +13,8 @@ from .serializers import ChatSerializer, AUTO_MODEL
 from .model_registry import list_models, get_default_model_id, get_model, UnknownModelError
 from .model_manager import (
     ModelManager,
+    loaded_models,
+    warm_up,
     generate_response,
     ModelManagerError,
     ModelTimeoutError,
@@ -146,13 +148,29 @@ def prepare_turn(data, image_info):
             selection["reason"], any(m.get("images") for m in messages), bool(extra_context), model_obj,
         ),
         "usage": {"reason": selection["reason"], "source": "chat"},
+        "think": data.get("think"),
     }
+
+
+def _thinking_enabled(turn):
+    model = get_model(turn["selection"]["model"])
+    think = turn["think"] if turn["think"] is not None else getattr(settings, "OLLAMA_THINK", None)
+    return bool(model.supports_thinking and think)
 
 
 def finish_turn(turn, result):
     """Persist the exchange (replacing a regenerated turn) and build the response body."""
     detail = "with OCR text" if turn["basis_kind"] == "image" and turn["extra_context"] else ""
     basis = reliability.basis(turn["basis_kind"], result["response"], detail)
+    basis["warnings"] = []
+    if turn["basis_kind"] == "image_text" and not basis["undetermined"]:
+        from documents.verify import check_numbers
+        missing = check_numbers(result["response"], turn["extra_context"], turn["data"]["message"])
+        if missing:
+            basis["warnings"].append(f"Value{'s' if len(missing) > 1 else ''} not found in the OCR text: "
+                                     f"{', '.join(missing)}")
+    if turn["basis_kind"] == "code" and reliability.execution_claims(result["response"]):
+        basis["warnings"].append("The answer says the code was run or tested, but the workbench did not execute it.")
     ctx.discard(turn["replaced_ids"])
     ctx.record_turn(
         turn["conv"], turn["data"]["message"], result["response"], model_tag=result["ollama_model"],
@@ -197,7 +215,8 @@ class ChatAPIView(APIView):
             return early
         try:
             # Execution: the execution layer decides HOW to call it (local Ollama only).
-            result = generate_response(turn["selection"]["model"], messages=turn["messages"], usage=turn["usage"])
+            result = generate_response(turn["selection"]["model"], messages=turn["messages"], usage=turn["usage"],
+                                       think=turn["think"])
         except Exception as exc:
             return _model_error(exc, turn)
         return Response(finish_turn(turn, result))
@@ -261,12 +280,16 @@ class ChatStreamAPIView(APIView):
         early, turn = prepare_turn(serializer.validated_data, getattr(serializer, "image_info", []))
         if early is not None:
             return early
+        # Tell the UI when the model still has to be loaded into GPU memory (~12-16 s).
+        model_loading = turn["selection"]["model"] not in loaded_models()
         try:
-            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"], usage=turn["usage"])
+            opened = ModelManager().chat_stream(turn["selection"]["model"], turn["messages"], usage=turn["usage"],
+                                                think=turn["think"])
         except Exception as exc:
             return _model_error(exc, turn)
         meta = {"conversation_id": str(turn["conv"].id), "routing": turn["routing"],
-                "ollama_model": turn["selection"]["model"], "ocr": turn["ocr_info"], "images": turn["image_info"]}
+                "ollama_model": turn["selection"]["model"], "ocr": turn["ocr_info"], "images": turn["image_info"],
+                "model_loading": model_loading, "thinking_enabled": _thinking_enabled(turn)}
         # The turn is stored only when the stream completes (a dropped connection stores nothing).
         return streaming_response(ndjson_stream(opened, meta, lambda event: finish_turn(turn, event)))
 
@@ -346,3 +369,18 @@ class ConversationDetailAPIView(APIView):
     def delete(self, request, pk):
         deleted, _ = Conversation.objects.filter(pk=pk).delete()
         return Response({"success": bool(deleted)}, status=200 if deleted else 404)
+
+
+class ModelWarmupAPIView(APIView):
+    """
+    POST /api/models/warmup/ {"model": "qwen-vl"} - load a model into GPU memory ahead of
+    the user's request (no generation). Returns immediately; skipped while busy.
+    """
+
+    def post(self, request):
+        model_id = request.data.get("model") or get_default_model_id()
+        try:
+            state = warm_up(model_id)
+        except UnknownModelError:
+            return Response({"success": False, "error": f"Unknown model '{model_id}'."}, status=400)
+        return Response({"success": True, "model": model_id, "state": state})

@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
-import { uploadDocument, getOCRConfig } from '../../api/documentApi';
+import { uploadDocument, getOCRConfig, getDocument } from '../../api/documentApi';
+
+const POLL_MS = 1500;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function DocumentUpload({ onUploadSuccess }) {
   const [isDragging, setIsDragging] = useState(false);
@@ -11,6 +14,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const [ocrLanguages, setOcrLanguages] = useState([]);
   const [ocrLang, setOcrLang] = useState('');
   const [progress, setProgress] = useState(0); // transfer fraction 0..1
+  const [pages, setPages] = useState(null);     // {done, total} while the server extracts text
 
   useEffect(() => {
     getOCRConfig().then((cfg) => {
@@ -47,25 +51,35 @@ export default function DocumentUpload({ onUploadSuccess }) {
 
     setIsUploading(true);
     setProgress(0);
+    setPages(null);
     try {
-      const res = await uploadDocument(file, ocrLang, setProgress);
-      if (res && res.success) {
-        const ocrPages = res.document?.ocr_pages || 0;
+      let res = await uploadDocument(file, ocrLang, setProgress);
+      let doc = res?.document;
+      // 202: text extraction / OCR runs in the background - poll until ready or failed.
+      while (res?.success && doc && doc.status && !['ready', 'failed'].includes(doc.status)) {
+        setPages({ done: doc.progress_done || 0, total: doc.progress_total || 0 });
+        await sleep(POLL_MS);
+        const next = await getDocument(doc.id);
+        if (next?.success) doc = next.document;
+      }
+      if (res?.success && doc?.status !== 'failed') {
+        const ocrPages = doc?.ocr_pages || 0;
         setSuccessMsg(
           ocrPages
             ? `"${file.name}" processed with local OCR (${ocrPages} page${ocrPages > 1 ? 's' : ''}).`
             : `"${file.name}" uploaded and text extracted successfully!`
         );
-        if (onUploadSuccess) onUploadSuccess(res.document);
+        if (onUploadSuccess) onUploadSuccess(doc);
         setTimeout(() => setSuccessMsg(null), 4000);
       } else {
-        setError(res.error || "Failed to process document on server.");
+        setError(doc?.processing_error || res?.error || 'Failed to process document on server.');
       }
     } catch (err) {
-      setError(err.message || "An error occurred during upload.");
+      setError(err.message || 'An error occurred during upload.');
     } finally {
       setIsUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      setPages(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
 
@@ -123,7 +137,9 @@ export default function DocumentUpload({ onUploadSuccess }) {
               )}
               <li className={progress >= 1 ? 'is-active' : ''}>
                 {progress >= 1 ? <Loader2 size={14} className="spin-icon" /> : <span className="step-dot" />}
-                Processing: reading text, OCR for scanned pages
+                {pages?.total
+                  ? `Processing page ${Math.min(pages.done + 1, pages.total)} of ${pages.total}`
+                  : 'Processing: reading text, OCR for scanned pages'}
               </li>
               <li><span className="step-dot" /> Ready</li>
             </ol>

@@ -19,7 +19,7 @@ from .extractors import (
     extract_document,
     DocumentExtractionError,
 )
-from chat.model_manager import ModelManager, ModelManagerError
+from chat.model_manager import ModelManager, ModelManagerError, loaded_models
 from chat.views import ndjson_stream, streaming_response, StreamNegotiation
 from .services import (
     NothingToRegenerate,
@@ -29,6 +29,10 @@ from .services import (
     summarize_document,
     OllamaServiceError,
 )
+from django.conf import settings
+
+from . import jobs
+from .extractors import IMAGE_SIGNATURES
 from .generators import generate_document_docx_report
 from .ocr import allowed_languages, default_language, LANGUAGE_NAMES
 
@@ -59,52 +63,62 @@ class DocumentUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Extract text: PyMuPDF text layer, TXT reader, or local PaddleOCR for scans/images
-        try:
-            ocr_lang = serializer.validated_data.get("ocr_lang") or default_language()
-            extraction = extract_document(uploaded_file, file_type, lang=ocr_lang)
-        except DocumentExtractionError as exc:
-            return Response(
-                {"success": False, "error": str(exc)},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        except Exception as exc:
-            return Response(
-                {"success": False, "error": f"Failed to process document: {str(exc)}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Reset pointer for saving file to storage
+        ocr_lang = serializer.validated_data.get("ocr_lang") or default_language()
         uploaded_file.seek(0)
+        head = uploaded_file.read(16)
+        uploaded_file.seek(0)
+        if file_type in IMAGE_SIGNATURES and not head.startswith(IMAGE_SIGNATURES[file_type]):
+            return Response({"success": False, "error": f"The uploaded file is not a valid {file_type} image."},
+                            status=status.HTTP_400_BAD_REQUEST)
 
-        # Save to database
         doc = Document.objects.create(
             file=uploaded_file,
             original_name=uploaded_file.name,
             file_type=file_type,
-            extracted_text=extraction["text"],
-            extraction_method=extraction["method"],
-            ocr_pages=extraction["ocr_pages"],
-            ocr_confidence=extraction["ocr_confidence"],
-            page_count=extraction["page_count"],
-            ocr_pages_skipped=extraction["ocr_pages_skipped"],
-            truncated=extraction["truncated"],
-            original_chars=extraction["original_chars"],
-            ocr_lang=ocr_lang if extraction["ocr_pages"] else "",
-            complex_layout=extraction["complex_layout"],
+            extracted_text="",
+            status=Document.STATUS_QUEUED,
         )
 
+        if getattr(settings, "DOCUMENT_ASYNC_PROCESSING", True):
+            # Text extraction / OCR runs in the background; the client polls the document.
+            jobs.submit(doc.id, ocr_lang)
+            return Response({
+                "success": True,
+                "message": "Document uploaded; text extraction is running in the background.",
+                "document": DocumentDetailSerializer(doc).data,
+            }, status=status.HTTP_202_ACCEPTED)
+
+        # Synchronous mode (tests / small deployments): extract now, reject on failure.
+        jobs.process(doc.id, ocr_lang)
+        doc.refresh_from_db()
+        if doc.status != Document.STATUS_READY:
+            error = doc.processing_error or "The document could not be processed."
+            doc.delete()
+            return Response({"success": False, "error": error}, status=status.HTTP_400_BAD_REQUEST)
         return Response(
             {
                 "success": True,
                 "message": (
                     "Document uploaded and text extracted with local OCR."
-                    if extraction["ocr_pages"] else "Document uploaded and extracted successfully."
+                    if doc.ocr_pages else "Document uploaded and extracted successfully."
                 ),
                 "document": DocumentDetailSerializer(doc).data,
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+def _not_ready(doc):
+    """409 response while a document is still being processed (or failed)."""
+    jobs.mark_interrupted(doc)
+    if doc.status == Document.STATUS_READY:
+        return None
+    if doc.status == Document.STATUS_FAILED:
+        return Response({"success": False, "error": doc.processing_error or "Document processing failed."},
+                        status=status.HTTP_409_CONFLICT)
+    return Response({"success": False, "error": "The document is still being processed. Please wait."},
+                    status=status.HTTP_409_CONFLICT)
+
 
 class DocumentListView(APIView):
     def get(self, request):
@@ -114,7 +128,7 @@ class DocumentListView(APIView):
 
 class DocumentDetailView(APIView):
     def get(self, request, pk):
-        doc = get_object_or_404(Document, pk=pk)
+        doc = jobs.mark_interrupted(get_object_or_404(Document, pk=pk))
         serializer = DocumentDetailSerializer(doc)
         return Response({"success": True, "document": serializer.data})
 
@@ -130,6 +144,9 @@ class DocumentDetailView(APIView):
 class DocumentAskView(APIView):
     def post(self, request, pk):
         doc = get_object_or_404(Document, pk=pk)
+        blocked = _not_ready(doc)
+        if blocked is not None:
+            return blocked
         serializer = DocumentAskSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(
@@ -141,6 +158,7 @@ class DocumentAskView(APIView):
         try:
             result = ask_document_question(
                 doc, v.get("question"), conversation_id=v.get("conversation_id"), regenerate=v["regenerate"],
+                think=v.get("think"),
             )
             return Response({"success": True, **result, "external_api": False})
         except NothingToRegenerate:
@@ -160,28 +178,37 @@ class DocumentAskStreamView(APIView):
 
     def post(self, request, pk):
         doc = get_object_or_404(Document, pk=pk)
+        blocked = _not_ready(doc)
+        if blocked is not None:
+            return blocked
         serializer = DocumentAskSerializer(data=request.data)
         if not serializer.is_valid():
             return Response({"success": False, "errors": serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
         v = serializer.validated_data
         try:
-            prepared = prepare_document_question(doc, v.get("question"), v.get("conversation_id"), v["regenerate"])
+            prepared = prepare_document_question(doc, v.get("question"), v.get("conversation_id"), v["regenerate"],
+                                                 v.get("think"))
         except NothingToRegenerate:
             return Response({"success": False, "error": "There is no answer to regenerate."},
                             status=status.HTTP_400_BAD_REQUEST)
         try:
+            model_loading = prepared["decision"]["model"] not in loaded_models()
             opened = ModelManager().chat_stream(prepared["decision"]["model"], prepared["messages"],
-                                                usage=prepared["usage"])
+                                                usage=prepared["usage"], think=prepared["think"])
         except ModelManagerError as exc:
             return Response({"success": False, "error": exc.public_message},
                             status=status.HTTP_503_SERVICE_UNAVAILABLE)
         return streaming_response(ndjson_stream(
-            opened, prepared["meta"], lambda event: finish_document_question(prepared, event),
+            opened, {**prepared["meta"], "model_loading": model_loading},
+            lambda event: finish_document_question(prepared, event),
         ))
 
 class DocumentSummaryView(APIView):
     def post(self, request, pk):
         doc = get_object_or_404(Document, pk=pk)
+        blocked = _not_ready(doc)
+        if blocked is not None:
+            return blocked
 
         try:
             result = summarize_document(doc)

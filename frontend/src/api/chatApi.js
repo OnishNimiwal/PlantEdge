@@ -214,12 +214,30 @@ export async function postStream(url, body, onEvent) {
 }
 
 /** Streamed chat turn (same body as sendMessage; regenerate supported). */
-export function streamMessage({ message, model, images, conversationId, regenerate }, onEvent) {
+export function streamMessage({ message, model, images, conversationId, regenerate, think }, onEvent) {
   const body = {};
+  if (think) body.think = true;
   if (message) body.message = message;
   if (model) body.model = model;
   if (images && images.length) body.images = images;
   if (conversationId) body.conversation_id = conversationId;
   if (regenerate) body.regenerate = true;
   return postStream(`${API_BASE}/api/chat/stream/`, body, onEvent);
+}
+
+/**
+ * Ask the server to load a model into GPU memory before the user sends (fire-and-forget).
+ * The server skips it while another request is running, so it never evicts a busy model.
+ */
+const warmed = new Map();
+export function warmUp(model) {
+  if (!model || model === 'auto') return;
+  const last = warmed.get(model) || 0;
+  if (Date.now() - last < 60000) return; // at most once a minute per model
+  warmed.set(model, Date.now());
+  fetch(`${API_BASE}/api/models/warmup/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).catch(() => {});
 }

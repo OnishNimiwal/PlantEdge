@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { RotateCcw, AlertTriangle, Sparkles, ScanText, ImagePlus, CheckCircle2, Info } from 'lucide-react';
 import Markdown from './LazyMarkdown';
 import CopyButton from './CopyButton';
@@ -35,6 +35,23 @@ export function BasisIndicator({ basis }) {
   );
 }
 
+/** Seconds since `since` (ms timestamp), updated every second while mounted. */
+function useElapsed(since, active) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return since ? Math.max(0, Math.round((now - since) / 1000)) : 0;
+}
+
+function pendingLabel(message) {
+  if (message.loadingModel) return `Loading ${message.loadingModelName || 'model'} into GPU memory`;
+  if (message.thinking) return 'Thinking step by step';
+  return 'Thinking';
+}
+
 export default function MessageBubble({ message, onImageClick, onRegenerate, onRetry, canRegenerate }) {
   const bodyRef = useRef(null);
 
@@ -64,6 +81,7 @@ export default function MessageBubble({ message, onImageClick, onRegenerate, onR
   }
 
   const status = message.status || 'done';
+  const elapsed = useElapsed(message.startedAt, status === 'pending');
   const meta = message.info ? null : modelMeta(message.model, message.routing);
 
   return (
@@ -75,7 +93,10 @@ export default function MessageBubble({ message, onImageClick, onRegenerate, onR
         <div className="msg-meta">
           <span className="msg-author">MRPL Local AI</span>
           {status === 'pending' ? (
-            <span className="msg-meta-detail thinking">Thinking<span className="thinking-dots" /></span>
+            <span className="msg-meta-detail thinking" aria-live="polite">
+              {pendingLabel(message)}<span className="thinking-dots" />
+              {elapsed >= 3 && <span className="elapsed"> {elapsed}s</span>}
+            </span>
           ) : meta ? (
             <span className="msg-meta-detail" title={message.routingExplanation || ''}>{meta}</span>
           ) : null}

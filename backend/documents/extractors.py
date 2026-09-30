@@ -40,7 +40,22 @@ def validate_file_extension(filename: str) -> str:
 def _page_has_text(text: str) -> bool:
     return len("".join(text.split())) >= MIN_PAGE_TEXT_CHARS
 
-def _extract_pdf(file_bytes: bytes, lang: str = None) -> dict:
+def _join_pages(pages, with_markers):
+    """Join page texts; return (text, [[page_number, start_offset], ...]) for page citations."""
+    parts, offsets, pos = [], [], 0
+    for num, t, via_ocr in pages:
+        if not with_markers and not t:
+            continue
+        chunk = f"--- Page {num}{' (OCR)' if via_ocr else ''} ---\n{t}" if with_markers else t
+        if parts:
+            pos += 2  # "\n\n" separator
+        offsets.append([num, pos])
+        parts.append(chunk)
+        pos += len(chunk)
+    return "\n\n".join(parts), offsets
+
+
+def _extract_pdf(file_bytes: bytes, lang: str = None, progress=None) -> dict:
     """Text layer where present; local OCR for scanned (image-only) pages."""
     max_ocr_pages = getattr(settings, "OCR_MAX_PDF_PAGES", 20)
     max_pages = getattr(settings, "DOCUMENT_MAX_PDF_PAGES", 300)
@@ -59,6 +74,8 @@ def _extract_pdf(file_bytes: bytes, lang: str = None) -> dict:
         complex_layout = False
         skipped_pages = []
         for page in doc:
+            if progress:
+                progress(page.number, page_count)
             page_text = page.get_text("text").strip()
             if _page_has_text(page_text):
                 pages.append((page.number + 1, page_text, False))
@@ -73,17 +90,18 @@ def _extract_pdf(file_bytes: bytes, lang: str = None) -> dict:
             else:
                 skipped_pages.append(page.number + 1)
 
+    if progress:
+        progress(page_count, page_count)
     ocr_pages = len(ocr_confidences)
+    offsets = []
     if not any(t.strip() for _, t, _ in pages):
         text, method = "", ("ocr" if ocr_pages else "text")
     elif ocr_pages == 0:
-        # Unchanged behaviour for normal text PDFs.
-        text = "\n\n".join(t for _, t, _ in pages if t)
+        # Unchanged text format for normal text PDFs.
+        text, offsets = _join_pages(pages, with_markers=False)
         method = "text"
     else:
-        text = "\n\n".join(
-            f"--- Page {num}{' (OCR)' if via_ocr else ''} ---\n{t}" for num, t, via_ocr in pages
-        )
+        text, offsets = _join_pages(pages, with_markers=True)
         method = "ocr" if ocr_pages == len(pages) else "text+ocr"
         if skipped_pages:
             text += (
@@ -96,6 +114,7 @@ def _extract_pdf(file_bytes: bytes, lang: str = None) -> dict:
         "ocr_pages": ocr_pages,
         "ocr_confidence": round(sum(ocr_confidences) / ocr_pages, 3) if ocr_pages else None,
         "page_count": page_count,
+        "page_offsets": offsets,
         "ocr_pages_skipped": len(skipped_pages),
         "complex_layout": complex_layout,
     }
@@ -117,7 +136,7 @@ def _extract_image(file_bytes: bytes, file_type: str, lang: str = None) -> dict:
         "complex_layout": result.get("complex_layout", False),
     }
 
-def extract_document(file_obj, file_type: str, lang: str = None) -> dict:
+def extract_document(file_obj, file_type: str, lang: str = None, progress=None) -> dict:
     """
     Extracts text from an uploaded file object.
     PDF: PyMuPDF text layer, with local PaddleOCR for scanned pages.
@@ -137,7 +156,7 @@ def extract_document(file_obj, file_type: str, lang: str = None) -> dict:
             file_bytes = file_obj.read()
             if not file_bytes:
                 raise DocumentExtractionError("The uploaded PDF file is empty.")
-            result = _extract_pdf(file_bytes, lang)
+            result = _extract_pdf(file_bytes, lang, progress)
         except pymupdf.FileDataError as exc:
             raise DocumentExtractionError(f"Corrupted or invalid PDF file: {str(exc)}") from exc
         except DocumentExtractionError:
@@ -149,6 +168,8 @@ def extract_document(file_obj, file_type: str, lang: str = None) -> dict:
         file_bytes = file_obj.read()
         if not file_bytes:
             raise DocumentExtractionError("The uploaded image file is empty.")
+        if progress:
+            progress(0, 1)
         try:
             result = _extract_image(file_bytes, file_type, lang)
         except DocumentExtractionError:

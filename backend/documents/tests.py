@@ -7,7 +7,7 @@ import requests
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.urls import reverse
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APITransactionTestCase
 
 from .models import Document
 
@@ -474,7 +474,7 @@ class DocumentLimitTests(APITestCase):
         prompt = chat_prompt(mock_post.call_args.kwargs["json"])
         self.assertLess(len(prompt) / 3.0, 8192)  # whole prompt fits, so Ollama will not halve it
         self.assertIn("What is the reading?", prompt)  # question survives
-        self.assertIn("fit in the model context window", prompt)
+        self.assertIn("sections most relevant to the question", prompt)
 
     @patch("chat.model_manager.requests.Session.post", return_value=ok_response("ok"))
     def test_short_document_not_truncated(self, mock_post):
@@ -527,6 +527,7 @@ class DocumentConversationTests(APITestCase):
 class OCRConfigurationTests(APITestCase):
     """Phase D: OCR profiles, preprocessing, languages, layout detection (L15, L18, L19, L21)."""
 
+    @override_settings(OCR_MODEL_PROFILE="server")
     def test_default_engine_config(self):
         from .ocr import engine_config
         cfg = engine_config("en")
@@ -680,3 +681,146 @@ class DocumentReliabilityTests(APITestCase):
                              {"question": "What does the drawing on page 2 show?"}, format="json")
         self.assertEqual(r.data["basis"]["detail"], "scan.pdf — page 2 (image)")
         self.assertIn("Observed", mock_post.call_args.kwargs["json"]["messages"][0]["content"])
+
+
+_sync_override = override_settings(DOCUMENT_ASYNC_PROCESSING=False)
+
+
+def setUpModule():
+    from chat.tests import start_loaded_patchers
+    start_loaded_patchers()
+    _sync_override.enable()  # most tests check the finished upload; async is tested separately
+
+
+def tearDownModule():
+    from chat.tests import stop_loaded_patchers
+    stop_loaded_patchers()
+    _sync_override.disable()
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class AsyncUploadTests(APITransactionTestCase):
+    """The worker thread writes through its own DB connection, so no wrapping transaction."""
+
+    @override_settings(DOCUMENT_ASYNC_PROCESSING=True)
+    @patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT)
+    def test_async_upload_then_ready(self, mock_ocr):
+        import time as _time
+        from . import jobs
+        r = self.client.post(reverse("document-upload"), {
+            "file": SimpleUploadedFile("scan.pdf", make_scanned_pdf_bytes(pages=2), content_type="application/pdf")},
+            format="multipart")
+        self.assertEqual(r.status_code, 202)
+        doc_id = r.data["document"]["id"]
+        self.assertIn(r.data["document"]["status"], ("queued", "processing", "ready"))
+        for _ in range(100):  # the worker thread runs in the background
+            if doc_id not in jobs.active_ids():
+                break
+            _time.sleep(0.05)
+        d = self.client.get(reverse("document-detail", kwargs={"pk": doc_id})).data["document"]
+        self.assertEqual(d["status"], "ready")
+        self.assertEqual((d["progress_done"], d["progress_total"]), (2, 2))
+        self.assertIn("shell corrosion", d["extracted_text"])
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA)
+class BackgroundProcessingTests(APITestCase):
+    """Response time: uploads return immediately, extraction runs in a worker (L31)."""
+
+    def test_questions_blocked_until_ready_and_interrupted_jobs_fail(self):
+        doc = Document.objects.create(original_name="p.pdf", file_type="PDF", extracted_text="",
+                                      status=Document.STATUS_PROCESSING)
+        from . import jobs
+        with patch.object(jobs, "active_ids", return_value={doc.id}):
+            r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}), {"question": "?"}, format="json")
+            self.assertEqual(r.status_code, 409)
+            self.assertIn("still being processed", r.data["error"])
+        # No job exists for it any more (e.g. server restarted) -> reported as failed, not stuck.
+        d = self.client.get(reverse("document-detail", kwargs={"pk": doc.id})).data["document"]
+        self.assertEqual(d["status"], "failed")
+        self.assertIn("interrupted", d["processing_error"])
+
+    def test_page_offsets_for_text_and_ocr_pdfs(self):
+        from .extractors import extract_document
+        src = pymupdf.open()
+        for i in range(3):
+            src.new_page().insert_text((50, 72), f"Typed page number {i + 1} with enough characters here.")
+        res = extract_document(io.BytesIO(src.tobytes()), "PDF")
+        for page, start in res["page_offsets"]:
+            self.assertTrue(res["text"][start:].startswith(f"Typed page number {page}"))
+        with patch("documents.ocr.ocr_pdf_page", return_value=OCR_RESULT):
+            res = extract_document(io.BytesIO(make_scanned_pdf_bytes(pages=2)), "PDF")
+        self.assertEqual([p for p, _ in res["page_offsets"]], [1, 2])
+        self.assertTrue(res["text"][res["page_offsets"][1][1]:].startswith("--- Page 2 (OCR) ---"))
+
+    def test_generic_error_on_unexpected_failure(self):
+        with patch("documents.extractors.extract_document", side_effect=RuntimeError("secret /var/path")):
+            r = self.client.post(reverse("document-upload"), {
+                "file": SimpleUploadedFile("a.txt", b"hello world", content_type="text/plain")}, format="multipart")
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn("secret", r.data["error"])
+
+
+class RetrievalAndVerificationTests(APITestCase):
+    """L28 (long documents), page citations, deterministic number/citation checks."""
+
+    def long_pdf_doc(self):
+        from .extractors import extract_document
+        src = pymupdf.open()
+        for i in range(1, 41):
+            page = src.new_page()
+            body = "Routine inspection log entry. " * 40
+            if i == 33:
+                body += " The emergency shutdown pressure for vessel V-101 is 17.5 bar."
+            page.insert_textbox(pymupdf.Rect(40, 40, 560, 800), f"Page {i} report.\n{body}", fontsize=9)
+        res = extract_document(io.BytesIO(src.tobytes()), "PDF")
+        return Document.objects.create(original_name="long.pdf", file_type="PDF", extracted_text=res["text"],
+                                       page_offsets=res["page_offsets"], page_count=40)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_fact_deep_in_long_document_is_retrieved_with_page_label(self, mock_post):
+        doc = self.long_pdf_doc()
+        self.assertGreater(len(doc.extracted_text), 40000)
+        mock_post.return_value = ok_response("The shutdown pressure is 17.5 bar [p. 33].")
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "What is the emergency shutdown pressure for vessel V-101?"}, format="json")
+        system = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("[p. 33]", system)
+        self.assertIn("17.5 bar", system)
+        self.assertTrue(r.data["context"]["retrieval"])
+        self.assertIn(33, r.data["context"]["pages"])
+        self.assertEqual(r.data["basis"]["detail"], "long.pdf — p. 33")
+        self.assertEqual(r.data["basis"]["warnings"], [])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_invented_value_and_bad_citation_are_flagged(self, mock_post):
+        doc = self.long_pdf_doc()
+        mock_post.return_value = ok_response("The shutdown pressure is 23.75 bar [p. 39].")
+        r = self.client.post(reverse("document-ask", kwargs={"pk": doc.id}),
+                             {"question": "What is the emergency shutdown pressure for vessel V-101?"}, format="json")
+        w = " ".join(r.data["basis"]["warnings"])
+        self.assertIn("not found in the document: 23.75", w)
+        self.assertIn("Cited page not given to the model: 39", w)
+        stored = self.client.get(reverse("conversation-detail", kwargs={"pk": r.data["conversation_id"]}))
+        self.assertEqual(stored.data["conversation"]["messages"][1]["basis"]["warnings"], r.data["basis"]["warnings"])
+
+    def test_number_check_rules(self):
+        from .verify import check_numbers
+        doc = "Design pressure: 16 bar(g). Completion Q3 2027. Temperature 120°C. Flow 1,250 m3/h."
+        self.assertEqual(check_numbers("It is 16 bar and 120°C, flow 1250 m3/h.", doc), [])
+        self.assertEqual(check_numbers("1. Pressure 16 bar\n2. Budget 5 crore", doc), ["5"])
+        self.assertEqual(check_numbers("Page cited [p. 4]: 16 bar", doc), [])
+
+    def test_summary_spreads_over_whole_document(self):
+        from .retrieval import build_context
+        text = "\n\n".join(f"Section {i}: " + "text " * 200 for i in range(30))
+        content, info = build_context(text, "", 6000)
+        self.assertTrue(info["retrieval"])
+        self.assertIn("Section 0:", content)
+        self.assertIn("Section 2", content)
+        self.assertTrue(any(f"Section {i}:" in content for i in range(20, 30)))  # not only the beginning
+
+    def test_short_document_passed_whole(self):
+        from .retrieval import build_context
+        content, info = build_context("Short text.", "question", 5000)
+        self.assertEqual((content, info["retrieval"]), ("Short text.", False))

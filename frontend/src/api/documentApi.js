@@ -181,8 +181,9 @@ export async function deleteDocument(id) {
 }
 
 /** Streamed document question (or regenerate of the last answer). */
-export async function streamDocumentQuestion(id, { question, conversationId, regenerate }, onEvent) {
+export async function streamDocumentQuestion(id, { question, conversationId, regenerate, think }, onEvent) {
   const body = {};
+  if (think) body.think = true;
   if (question) body.question = question;
   if (conversationId) body.conversation_id = conversationId;
   if (regenerate) body.regenerate = true;

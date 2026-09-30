@@ -7,7 +7,8 @@ class DocumentListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Document
-        fields = ['id', 'original_name', 'file_type', 'extraction_method', 'uploaded_at', 'text_length']
+        fields = ['id', 'original_name', 'file_type', 'extraction_method', 'uploaded_at', 'text_length',
+                  'status', 'progress_done', 'progress_total']
 
     def get_text_length(self, obj):
         return len(obj.extracted_text) if obj.extracted_text else 0
@@ -33,6 +34,10 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'original_chars',
             'ocr_lang',
             'complex_layout',
+            'status',
+            'progress_done',
+            'progress_total',
+            'processing_error',
             'limits',
             'uploaded_at',
             'text_length',
@@ -83,6 +88,7 @@ class DocumentAskSerializer(serializers.Serializer):
     question = serializers.CharField(required=False, allow_blank=False, max_length=2000)
     conversation_id = serializers.UUIDField(required=False, allow_null=True)
     regenerate = serializers.BooleanField(required=False, default=False)
+    think = serializers.BooleanField(required=False, allow_null=True, default=None)
 
     def validate(self, attrs):
         if attrs.get("regenerate"):

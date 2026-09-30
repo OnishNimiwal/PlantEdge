@@ -808,3 +808,20 @@
     min-width: 280px;
   }
 }
+
+.status-chip.is-queued,
+.status-chip.is-processing {
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  border: 1px solid var(--badge-amber-border);
+}
+
+.status-chip.is-failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+
+.doc-processing svg {
+  color: var(--accent-primary);
+}

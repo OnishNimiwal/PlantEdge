@@ -95,6 +95,78 @@ def ocr_status():
     }
 
 
+GPU_FIELDS = [
+    "name", "driver_version", "memory.used", "memory.total", "utilization.gpu", "temperature.gpu",
+    "power.draw", "power.limit", "power.default_limit", "clocks.sm", "clocks.max.sm",
+    "clocks_event_reasons.sw_power_cap", "clocks_event_reasons.sw_thermal_slowdown",
+    "clocks_event_reasons.hw_slowdown", "pstate",
+]
+
+
+def _num(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _power_source():
+    """'ac' | 'battery' | None (desktop / unknown), from /sys/class/power_supply."""
+    base = Path("/sys/class/power_supply")
+    if not base.is_dir():
+        return None
+    mains = [p for p in base.iterdir() if (p / "type").is_file() and (p / "type").read_text().strip() == "Mains"]
+    if not mains:
+        return None
+    online = any((p / "online").is_file() and (p / "online").read_text().strip() == "1" for p in mains)
+    return "ac" if online else "battery"
+
+
+def gpu_status():
+    """
+    NVIDIA GPU state via `nvidia-smi` (a local query, no GPU work) plus laptop power source.
+    Flags conditions that make inference much slower, e.g. running on battery, where the
+    GPU power limit drops (measured: 55 W -> 10 W, ~10x slower answers).
+    """
+    import shutil
+    import subprocess
+    if not shutil.which("nvidia-smi"):
+        return {"state": "unavailable", "label": "Not detected", "reason": "No NVIDIA GPU tools found on the server."}
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={','.join(GPU_FIELDS)}", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=HEALTH_TIMEOUT,
+        ).stdout.strip().splitlines()[0]
+    except Exception as exc:
+        logger.warning("GPU check failed: %s", exc.__class__.__name__)
+        return {"state": "unavailable", "label": "Unavailable", "reason": "The GPU status could not be read."}
+    values = dict(zip(GPU_FIELDS, [v.strip() for v in out.split(",")]))
+    info = {
+        "name": values.get("name"), "driver": values.get("driver_version"),
+        "memory_used_mb": _num(values.get("memory.used")), "memory_total_mb": _num(values.get("memory.total")),
+        "utilization": _num(values.get("utilization.gpu")), "temperature_c": _num(values.get("temperature.gpu")),
+        "power_draw_w": _num(values.get("power.draw")), "power_limit_w": _num(values.get("power.limit")),
+        "power_default_w": _num(values.get("power.default_limit")),
+        "clock_mhz": _num(values.get("clocks.sm")), "clock_max_mhz": _num(values.get("clocks.max.sm")),
+        "pstate": values.get("pstate"), "power_source": _power_source(),
+    }
+    warnings = []
+    if info["power_source"] == "battery":
+        warnings.append("Running on battery: the laptop limits GPU power, so answers are much slower. "
+                        "Connect the charger.")
+    if info["power_limit_w"] and info["power_default_w"] and info["power_limit_w"] < 0.5 * info["power_default_w"]:
+        warnings.append(f"GPU power limited to {info['power_limit_w']:.0f} W "
+                        f"(normal {info['power_default_w']:.0f} W).")
+    if values.get("clocks_event_reasons.sw_power_cap") == "Active" and (info["utilization"] or 0) > 50:
+        warnings.append("The GPU is being power-capped while busy.")
+    if "Active" in (values.get("clocks_event_reasons.sw_thermal_slowdown"), values.get("clocks_event_reasons.hw_slowdown")):
+        warnings.append("The GPU is slowing down to control temperature or power.")
+    if (info["temperature_c"] or 0) >= 87:
+        warnings.append(f"GPU temperature is high ({info['temperature_c']:.0f} °C).")
+    state, label = ("degraded", "Limited") if warnings else ("ready", "Ready")
+    return {"state": state, "label": label, "warnings": warnings, **info}
+
+
 def model_health(ollama):
     from chat.model_registry import list_models
     from .usage import last_success_by_model
@@ -129,6 +201,7 @@ def full_status():
             "backend": {"state": "ready", "label": "Online"},  # this response is the proof
             "ollama": {k: v for k, v in ollama.items() if k not in ("installed", "loaded")},
             "ocr": ocr_status(),
+            "gpu": gpu_status(),
         },
         "models": model_health(ollama),
     }

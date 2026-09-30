@@ -15,6 +15,7 @@ used sequentially rather than held in GPU memory simultaneously.
 import ipaddress
 import logging
 import socket
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -135,16 +136,95 @@ def _session():
     return session
 
 
+# ---------------------------------------------------------------------------
+# In-flight requests + predictive warm-up (response time)
+# ---------------------------------------------------------------------------
+
+_state_lock = threading.Lock()
+_inflight = 0
+_warming = set()
+
+
+def _inflight_begin():
+    global _inflight
+    with _state_lock:
+        _inflight += 1
+
+
+def _inflight_end():
+    global _inflight
+    with _state_lock:
+        _inflight = max(0, _inflight - 1)
+
+
+def loaded_models(timeout=2) -> dict:
+    """{ollama_tag: size_vram} for models currently resident (metadata call, no loading)."""
+    try:
+        ensure_local_endpoint(settings.OLLAMA_URL)
+        data = _session().get(f"{settings.OLLAMA_URL}/api/ps", timeout=timeout, allow_redirects=False).json()
+        return {m["name"]: m.get("size_vram") for m in data.get("models", [])}
+    except Exception:
+        return {}
+
+
+def warm_up(model_id) -> str:
+    """
+    Load a model into GPU memory ahead of the user's request (no generation).
+    Returns: disabled | busy | loaded | warming | started | unavailable.
+    Skipped while another request is running, so a warm-up never evicts a model
+    that is being used (one model fits in 8 GB VRAM at a time).
+    """
+    if not getattr(settings, "OLLAMA_WARMUP", True):
+        return "disabled"
+    model = get_model(model_id)
+    with _state_lock:
+        if _inflight or _warming:
+            return "busy" if _inflight else "warming"
+    try:
+        ensure_local_endpoint(settings.OLLAMA_URL)
+    except ModelManagerError:
+        return "unavailable"
+    if model.ollama_name in loaded_models():
+        return "loaded"
+    with _state_lock:
+        if _inflight or _warming:
+            return "busy"
+        _warming.add(model.ollama_name)
+
+    def run():
+        started = time.monotonic()
+        try:
+            # An empty prompt makes Ollama load the model without generating anything.
+            payload = {"model": model.ollama_name, "keep_alive": getattr(settings, "OLLAMA_KEEP_ALIVE", "") or "5m",
+                       "options": {"num_ctx": context_window(model)}}
+            _session().post(f"{settings.OLLAMA_URL}/api/generate", json=payload,
+                            timeout=getattr(settings, "OLLAMA_TIMEOUT", 300), allow_redirects=False)
+            logger.info("Warm-up: model=%s loaded in %.1fs", model.id, time.monotonic() - started)
+        except Exception as exc:
+            logger.warning("Warm-up failed: model=%s (%s)", model.id, exc.__class__.__name__)
+        finally:
+            with _state_lock:
+                _warming.discard(model.ollama_name)
+
+    threading.Thread(target=run, name=f"warmup-{model.id}", daemon=True).start()
+    return "started"
+
+
 class ModelManager:
     def __init__(self, base_url=None, timeout=None):
         self.base_url = (base_url or settings.OLLAMA_URL).rstrip("/")
         self.timeout = timeout or getattr(settings, "OLLAMA_TIMEOUT", 300)
 
-    def _options(self, model) -> dict:
+    def _options(self, model, think=None) -> dict:
+        """num_ctx, keep_alive and the thinking flag. A per-request `think` overrides OLLAMA_THINK."""
         extra = {"options": {"num_ctx": context_window(model)}}
-        think = getattr(settings, "OLLAMA_THINK", None)
+        keep_alive = getattr(settings, "OLLAMA_KEEP_ALIVE", "")
+        if keep_alive:
+            extra["keep_alive"] = keep_alive
+        if think is None:
+            think = getattr(settings, "OLLAMA_THINK", None)
         if model.supports_thinking and think is not None:
-            extra["think"] = think
+            extra["think"] = bool(think)
         return extra
 
     def _run_recorded(self, model, usage, fn):
@@ -159,7 +239,7 @@ class ModelManager:
         record(model, usage, True, duration)
         return data, duration
 
-    def generate(self, model_id=None, prompt="", images=None, usage=None) -> dict:
+    def generate(self, model_id=None, prompt="", images=None, usage=None, think=None) -> dict:
         """
         Run a single non-streaming generation on a registered local model.
 
@@ -175,7 +255,7 @@ class ModelManager:
             "model": model.ollama_name,
             "prompt": prompt,
             "stream": False,
-            **self._options(model),
+            **self._options(model, think),
         }
         if images:
             if not model.supports_images:
@@ -192,7 +272,7 @@ class ModelManager:
             "context_overflow": estimate_tokens(prompt, len(images or [])) > context_window(model),
         }
 
-    def chat(self, model_id, messages, usage=None) -> dict:
+    def chat(self, model_id, messages, usage=None, think=None) -> dict:
         """
         Multi-turn generation via Ollama /api/chat.
 
@@ -209,7 +289,7 @@ class ModelManager:
             "model": model.ollama_name,
             "messages": messages,
             "stream": False,
-            **self._options(model),
+            **self._options(model, think),
         }
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
         data, duration = self._run_recorded(
@@ -224,7 +304,7 @@ class ModelManager:
             > context_window(model),
         }
 
-    def chat_stream(self, model_id, messages, usage=None) -> "ChatStream":
+    def chat_stream(self, model_id, messages, usage=None, think=None) -> "ChatStream":
         """
         Streaming variant of chat(). The HTTP request to Ollama is made here, so
         connection / missing-model / GPU errors raise immediately (before any output
@@ -239,24 +319,27 @@ class ModelManager:
             "model": model.ollama_name,
             "messages": messages,
             "stream": True,
-            **self._options(model),
+            **self._options(model, think),
         }
         prompt_chars = sum(len(m.get("content") or "") for m in messages)
         try:
             response, started = self._send("/api/chat", payload, model, prompt_chars, image_count, stream=True)
         except ModelManagerError as exc:
+            _inflight_end()
             from monitoring.usage import record
             record(model, usage, False, error=exc, streamed=True)
             raise
         return ChatStream(model, response, started, usage)
 
     def _post(self, endpoint, payload, model, prompt_chars, image_count):
-        response, started = self._send(endpoint, payload, model, prompt_chars, image_count)
         try:
+            response, started = self._send(endpoint, payload, model, prompt_chars, image_count)
             data = response.json()
         except ValueError as exc:
             logger.error("Inference failed: model=%s invalid JSON from Ollama", model.id)
             raise ModelRequestError() from exc
+        finally:
+            _inflight_end()
         duration = int((time.monotonic() - started) * 1000)
         logger.info(
             "Inference success: model=%s ollama_model=%s duration_ms=%d prompt_tokens=%s eval_tokens=%s",
@@ -265,7 +348,11 @@ class ModelManager:
         return data, duration
 
     def _send(self, endpoint, payload, model, prompt_chars, image_count, stream=False):
-        """POST to local Ollama and validate the status. Returns (response, started)."""
+        """
+        POST to local Ollama and validate the status. Returns (response, started).
+        Counts as an in-flight request (see warm_up); the caller ends it.
+        """
+        _inflight_begin()
         # Log metadata only - never prompt or image contents.
         estimated = int(prompt_chars / CHARS_PER_TOKEN) + image_count * TOKENS_PER_IMAGE
         logger.info(
@@ -337,6 +424,17 @@ class ChatStream:
 
     def __init__(self, model, response, started, usage=None):
         self.model, self.response, self.started, self.usage = model, response, started, usage
+        self._released = False
+
+    def _release(self):
+        """End the in-flight count exactly once (also if the stream is never iterated)."""
+        if not self._released:
+            self._released = True
+            self.response.close()
+            _inflight_end()
+
+    def __del__(self):
+        self._release()
 
     def _record(self, success, error=None):
         from monitoring.usage import record
@@ -393,10 +491,10 @@ class ChatStream:
         finally:
             if not finished:  # client went away mid-stream (GeneratorExit)
                 self._record(False, ClientDisconnected())
-            self.response.close()
+            self._release()
 
 
-def generate_response(model: str, prompt: str = None, images=None, messages=None, usage=None) -> dict:
+def generate_response(model: str, prompt: str = None, images=None, messages=None, usage=None, think=None) -> dict:
     """
     Execution-layer entry point: run a request on the model chosen by the router.
 
@@ -408,5 +506,5 @@ def generate_response(model: str, prompt: str = None, images=None, messages=None
     Returns {"response", "model", "ollama_model", "duration_ms", "context_overflow"}.
     """
     if messages is not None:
-        return ModelManager().chat(model, messages, usage=usage)
-    return ModelManager().generate(model, prompt or "", images=images, usage=usage)
+        return ModelManager().chat(model, messages, usage=usage, think=think)
+    return ModelManager().generate(model, prompt or "", images=images, usage=usage, think=think)

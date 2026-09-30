@@ -182,6 +182,7 @@ def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images
         model=model_tag or "", routing_reason=reason or "",
         basis=(basis or {}).get("type", ""), basis_detail=(basis or {}).get("detail", ""),
         basis_undetermined=bool((basis or {}).get("undetermined")),
+        basis_warnings=(basis or {}).get("warnings") or [],
     )
     if not conv.title:
         conv.title = user_text.strip().splitlines()[0][:80] if user_text.strip() else "Conversation"
@@ -193,7 +194,8 @@ def _basis_out(m):
         return None
     from .reliability import LABELS, UNDETERMINED_LABELS
     label = UNDETERMINED_LABELS.get(m.basis) if m.basis_undetermined else LABELS.get(m.basis)
-    return {"type": m.basis, "label": label or "", "detail": m.basis_detail, "undetermined": m.basis_undetermined}
+    return {"type": m.basis, "label": label or "", "detail": m.basis_detail, "undetermined": m.basis_undetermined,
+            "warnings": m.basis_warnings or []}
 
 
 def serialize(conv) -> dict:

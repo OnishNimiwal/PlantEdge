@@ -48,6 +48,7 @@ class ChatMessage(models.Model):
     basis = models.CharField(max_length=20, blank=True)
     basis_detail = models.CharField(max_length=255, blank=True)
     basis_undetermined = models.BooleanField(default=False)
+    basis_warnings = models.JSONField(default=list, blank=True)  # deterministic check results
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

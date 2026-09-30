@@ -65,10 +65,16 @@ export default function DocumentList({
                       <Calendar size={12} />
                       {formatDate(doc.uploaded_at)}
                     </span>
-                    <span className="doc-meta-item">
-                      <FileCode size={12} />
-                      {(doc.text_length || 0).toLocaleString()} chars
-                    </span>
+                    {doc.status && doc.status !== 'ready' ? (
+                      <span className={`status-chip is-${doc.status}`}>
+                        {doc.status === 'failed' ? 'Failed' : 'Processing…'}
+                      </span>
+                    ) : (
+                      <span className="doc-meta-item">
+                        <FileCode size={12} />
+                        {(doc.text_length || 0).toLocaleString()} chars
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

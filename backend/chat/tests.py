@@ -30,6 +30,20 @@ import shutil as _shutil
 import tempfile as _tempfile
 _media_override = None
 
+# Streaming endpoints ask Ollama which models are loaded; keep tests independent of the machine.
+LOADED_PATCHERS = [patch("chat.views.loaded_models", return_value={}),
+                   patch("documents.views.loaded_models", return_value={})]
+
+
+def start_loaded_patchers():
+    for p in LOADED_PATCHERS:
+        p.start()
+
+
+def stop_loaded_patchers():
+    for p in LOADED_PATCHERS:
+        p.stop()
+
 
 def setUpModule():
     global _media_override
@@ -37,6 +51,7 @@ def setUpModule():
     _media_override = override_settings(MEDIA_ROOT=_tempfile.mkdtemp(prefix="mrpl-chat-test-"),
                                         CHAT_SYSTEM_PROMPT="", RELIABILITY_INSTRUCTIONS=False)
     _media_override.enable()
+    start_loaded_patchers()
 
 
 def tearDownModule():
@@ -44,6 +59,7 @@ def tearDownModule():
     root = _settings.MEDIA_ROOT
     _media_override.disable()
     _shutil.rmtree(root, ignore_errors=True)
+    stop_loaded_patchers()
 
 
 def sent_user_message(mock_post):
@@ -469,12 +485,15 @@ class ExecutionLayerTests(APITestCase):
         generate_response("qwen3", "hi")
         payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(payload["options"]["num_ctx"], 8192)
-        self.assertNotIn("think", payload)  # default: model decides
-        with override_settings(OLLAMA_THINK=False):
+        self.assertIs(payload["think"], False)          # default: thinking off (speed)
+        self.assertEqual(payload["keep_alive"], "30m")  # keep the model loaded longer
+        generate_response("qwen3", "hi", think=True)      # "Think deeper"
+        self.assertIs(mock_post.call_args.kwargs["json"]["think"], True)
+        generate_response("qwen-coder", "hi", think=True)  # not a thinking model
+        self.assertNotIn("think", mock_post.call_args.kwargs["json"])
+        with override_settings(OLLAMA_THINK=None):
             generate_response("qwen3", "hi")
-            self.assertIs(mock_post.call_args.kwargs["json"]["think"], False)
-            generate_response("qwen-coder", "hi")  # not a thinking model
-            self.assertNotIn("think", mock_post.call_args.kwargs["json"])
+            self.assertNotIn("think", mock_post.call_args.kwargs["json"])  # model default
         with override_settings(OLLAMA_NUM_CTX=4096):
             generate_response("qwen3", "hi")
             self.assertEqual(mock_post.call_args.kwargs["json"]["options"]["num_ctx"], 4096)
@@ -1035,3 +1054,76 @@ class EmptyConversationListTests(APITestCase):
         mock_post.side_effect = requests.exceptions.ConnectionError()
         self.client.post(reverse("chat"), {"message": "hi"}, format="json")
         self.assertEqual(self.client.get(reverse("conversation-list")).data["conversations"], [])
+
+
+class ResponseTimeTests(APITestCase):
+    """Think toggle, keep-alive, warm-up and the model-loading hint."""
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_think_deeper_per_request(self, mock_post):
+        mock_post.return_value = ollama_ok("ok")
+        self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        self.assertIs(mock_post.call_args.kwargs["json"]["think"], False)
+        self.client.post(reverse("chat"), {"message": "hi", "think": True}, format="json")
+        self.assertIs(mock_post.call_args.kwargs["json"]["think"], True)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_stream_start_reports_loading_and_thinking(self, mock_post):
+        import json as _json
+        mock_post.return_value = ollama_stream("ok")
+        with patch("chat.views.loaded_models", return_value={"qwen3:8b": 1}):
+            r = self.client.post(reverse("chat-stream"), {"message": "hi", "think": True}, format="json")
+            start = _json.loads(b"".join(r.streaming_content).decode().splitlines()[0])
+        self.assertEqual((start["model_loading"], start["thinking_enabled"]), (False, True))
+        mock_post.return_value = ollama_stream("ok")
+        with patch("chat.views.loaded_models", return_value={}):
+            r = self.client.post(reverse("chat-stream"), {"message": "Write a Python function."}, format="json")
+            start = _json.loads(b"".join(r.streaming_content).decode().splitlines()[0])
+        self.assertEqual((start["model_loading"], start["thinking_enabled"]), (True, False))
+
+    def test_warmup_states(self):
+        from . import model_manager as mm
+        url = reverse("models-warmup")
+        with override_settings(OLLAMA_WARMUP=False):
+            self.assertEqual(self.client.post(url, {"model": "qwen3"}, format="json").data["state"], "disabled")
+        with patch.object(mm, "loaded_models", return_value={"qwen2.5vl:7b": 1}):
+            self.assertEqual(self.client.post(url, {"model": "qwen-vl"}, format="json").data["state"], "loaded")
+        mm._inflight_begin()
+        try:
+            self.assertEqual(self.client.post(url, {"model": "qwen-vl"}, format="json").data["state"], "busy")
+        finally:
+            mm._inflight_end()
+        with patch.object(mm, "loaded_models", return_value={}), \
+                patch("chat.model_manager.requests.Session.post") as mock_post:
+            r = self.client.post(url, {"model": "qwen-coder"}, format="json")
+            self.assertEqual(r.data["state"], "started")
+            for t in __import__("threading").enumerate():
+                if t.name == "warmup-qwen-coder":
+                    t.join(5)
+            payload = mock_post.call_args.kwargs["json"]
+            self.assertEqual(payload["model"], "qwen2.5-coder:7b")
+            self.assertNotIn("prompt", payload)  # load only, no generation
+        self.assertEqual(self.client.post(url, {"model": "gpt-4"}, format="json").status_code, 400)
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_inflight_counter_returns_to_zero(self, mock_post):
+        from . import model_manager as mm
+        mock_post.return_value = ollama_ok("ok")
+        self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        mock_post.return_value = ollama_stream("a", "b")
+        r = self.client.post(reverse("chat-stream"), {"message": "hi"}, format="json")
+        b"".join(r.streaming_content)
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        self.client.post(reverse("chat"), {"message": "hi"}, format="json")
+        self.assertEqual(mm._inflight, 0)
+
+
+class PostChecksTests(APITestCase):
+    @patch("chat.model_manager.requests.Session.post")
+    def test_code_execution_claim_flagged(self, mock_post):
+        mock_post.return_value = ollama_ok("```python\ndef f(): return 1\n```\nI have tested this and it works perfectly.")
+        r = self.client.post(reverse("chat"), {"message": "Write a Python function."}, format="json")
+        self.assertTrue(any("did not execute" in w for w in r.data["basis"]["warnings"]))
+        mock_post.return_value = ollama_ok("```python\ndef f(): return 1\n```\nThis should return 1.")
+        r = self.client.post(reverse("chat"), {"message": "Write a Python function."}, format="json")
+        self.assertEqual(r.data["basis"]["warnings"], [])

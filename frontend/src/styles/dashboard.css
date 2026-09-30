@@ -294,3 +294,15 @@
   .dashboard-inner { padding: 1rem 0.9rem 2rem; }
   .dash-section-head { flex-direction: column; }
 }
+
+.status-pill.is-degraded {
+  background: var(--badge-amber-bg);
+  color: var(--badge-amber-text);
+  border-color: var(--badge-amber-border);
+}
+
+.health-warning {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--badge-amber-text);
+}

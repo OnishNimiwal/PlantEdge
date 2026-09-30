@@ -46,6 +46,19 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A document still being processed (e.g. after a page reload): poll until it is ready.
+  useEffect(() => {
+    if (!selectedDoc || !['queued', 'processing'].includes(selectedDoc.status)) return undefined;
+    const t = setTimeout(async () => {
+      const res = await getDocument(selectedDoc.id);
+      if (res?.success) {
+        setSelectedDoc(res.document);
+        setDocuments((prev) => prev.map((d) => (d.id === res.document.id ? { ...d, ...res.document } : d)));
+      }
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [selectedDoc]);
+
   // Opened from the sidebar: show that document and that Q&A conversation.
   useEffect(() => {
     if (openRequest?.documentId) handleSelectDoc(openRequest.documentId, openRequest.conversationId);

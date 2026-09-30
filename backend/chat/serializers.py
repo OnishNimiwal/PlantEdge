@@ -17,6 +17,8 @@ class ChatSerializer(serializers.Serializer):
     # Required unless regenerate=True (then the last question is re-run).
     message = serializers.CharField(required=False, allow_blank=False)
     regenerate = serializers.BooleanField(required=False, default=False)
+    # "Think deeper": enable Qwen3 step-by-step reasoning for this message (slower).
+    think = serializers.BooleanField(required=False, allow_null=True, default=None)
     # "auto" (default when omitted) -> router picks; a registry id -> manual choice.
     model = serializers.CharField(required=False, allow_blank=False, default=AUTO_MODEL)
     # Conversation to continue (omitted/unknown -> a new conversation is started).

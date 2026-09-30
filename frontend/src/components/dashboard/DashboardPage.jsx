@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  RefreshCw, Activity, CheckCircle2, XCircle, CalendarDays, Server, Cpu, ScanText, AlertTriangle,
+  RefreshCw, Activity, CheckCircle2, XCircle, CalendarDays, Server, Cpu, ScanText, AlertTriangle, Gauge,
 } from 'lucide-react';
 import { getUsage, getSystemStatus } from '../../api/dashboardApi';
 import { modelLabel } from '../../utils/modelLabels';
@@ -144,6 +144,7 @@ function StatusSection() {
     { key: 'backend', icon: Server, name: 'Django Backend' },
     { key: 'ollama', icon: Cpu, name: 'Ollama' },
     { key: 'ocr', icon: ScanText, name: 'OCR Engine' },
+    { key: 'gpu', icon: Gauge, name: 'GPU & power' },
   ];
 
   const serviceState = (key) => {
@@ -173,7 +174,13 @@ function StatusSection() {
             {services.map(({ key, icon: Icon, name }) => {
               const s = serviceState(key);
               const detail = key === 'ollama' && s.version ? `Version ${s.version}`
-                : key === 'ocr' && s.detail ? s.detail : null;
+                : key === 'ocr' && s.detail ? s.detail
+                  : key === 'gpu' && s.name ? [
+                    s.name,
+                    s.memory_total_mb ? `${(s.memory_used_mb / 1024).toFixed(1)} / ${(s.memory_total_mb / 1024).toFixed(1)} GB used` : null,
+                    s.temperature_c != null ? `${Math.round(s.temperature_c)} °C` : null,
+                    s.power_source === 'ac' ? 'on mains power' : s.power_source === 'battery' ? 'on battery' : null,
+                  ].filter(Boolean).join(' · ') : null;
               return (
                 <li key={key}>
                   <div className="health-row">
@@ -181,7 +188,8 @@ function StatusSection() {
                     <StatusPill state={s.state} label={s.label} />
                   </div>
                   {s.state === 'unavailable' && s.reason && <div className="health-reason">{s.reason}</div>}
-                  {s.state === 'ready' && detail && <div className="health-detail">{detail}</div>}
+                  {(s.state === 'ready' || s.state === 'degraded') && detail && <div className="health-detail">{detail}</div>}
+                  {s.warnings?.map((w) => <div key={w} className="health-warning">{w}</div>)}
                 </li>
               );
             })}

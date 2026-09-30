@@ -151,9 +151,43 @@ def detect_complex_layout(boxes) -> bool:
     return split_rows >= 3 and split_rows / len(rows) >= 0.3
 
 
+_last_used = 0.0
+_unload_timer = None
+
+
+def _schedule_unload():
+    """Drop idle OCR engines after OCR_IDLE_UNLOAD_SECONDS to give the RAM back."""
+    global _unload_timer
+    delay = int(getattr(settings, "OCR_IDLE_UNLOAD_SECONDS", 600))
+    if delay <= 0:
+        return
+    if _unload_timer is not None:
+        _unload_timer.cancel()
+    _unload_timer = threading.Timer(delay, _unload_if_idle, args=(delay,))
+    _unload_timer.daemon = True
+    _unload_timer.start()
+
+
+def _unload_if_idle(delay):
+    import gc
+    with _engine_lock:
+        if _engines and time.monotonic() - _last_used >= delay - 1:
+            count = len(_engines)
+            _engines.clear()
+            gc.collect()
+            logger.info("OCR engine(s) unloaded after %ds idle (%d engine(s))", delay, count)
+
+
+def engines_loaded() -> int:
+    return len(_engines)
+
+
 def _recognize(image: np.ndarray, lang: str) -> dict:
+    global _last_used
     with _engine_lock:
         result = _get_engine(lang).predict(image)[0]
+        _last_used = time.monotonic()
+    _schedule_unload()
     texts = [t for t in result["rec_texts"] if t and t.strip()]
     scores = list(result["rec_scores"])[: len(texts)]
     boxes = result.get("rec_boxes")

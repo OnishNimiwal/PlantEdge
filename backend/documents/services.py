@@ -21,7 +21,7 @@ from chat.router import route_model, ROUTE_TARGETS, REASON_GENERAL, REASON_VISIO
 from chat.model_registry import get_model
 from chat import context as chat_context
 from chat import reliability
-from . import processing
+from . import processing, retrieval, verify
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,17 @@ def _ocr_note(document) -> str:
             "image and may contain recognition errors.\n"
         )
     return ""
+
+
+def context_budget(model_tag: str, reserved_chars: int) -> int:
+    """Characters of document text that fit the model's context window next to the rest of the prompt."""
+    return max(int(prompt_budget_tokens(get_model(model_tag)) * CHARS_PER_TOKEN) - reserved_chars, 1000)
+
+
+def document_content(document, question, model_tag, reserved_chars):
+    """Whole document if it fits, otherwise the most relevant page-labelled sections (retrieval.py)."""
+    return retrieval.build_context(document.extracted_text, question,
+                                   context_budget(model_tag, reserved_chars), document.page_offsets or None)
 
 
 def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
@@ -75,7 +86,7 @@ class NothingToRegenerate(Exception):
     pass
 
 
-def prepare_document_question(document, question=None, conversation_id=None, regenerate=False) -> dict:
+def prepare_document_question(document, question=None, conversation_id=None, regenerate=False, think=None) -> dict:
     """
     Routing + prompt building for a document question (shared by the JSON and
     streaming endpoints). With regenerate=True the conversation's last question is
@@ -126,12 +137,12 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
         pages_label = (f"page{'s' if len(vision_pages) > 1 else ''} {', '.join(map(str, vision_pages))} (image)"
                        if document.file_type == "PDF" else "image")
         basis_detail = f"{document.original_name} — {pages_label}"
+        pages_available = list(vision_pages) if document.file_type == "PDF" else []
     else:
         # Leave a quarter of the budget for conversation history.
         history_reserve = int(prompt_budget_tokens(get_model(decision["model"])) * CHARS_PER_TOKEN) // 4
-        doc_text, context_info = fit_to_context(
-            document.extracted_text, decision["model"],
-            reserved_chars=1500 + len(question) + history_reserve,
+        doc_text, context_info = document_content(
+            document, question, decision["model"], reserved_chars=1500 + len(question) + history_reserve,
         )
         system = reliability.system_prompt(
             "document",
@@ -142,6 +153,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             f"=== DOCUMENT CONTENT ===\n{doc_text}\n=== END DOCUMENT CONTENT ===",
         )
         basis_detail = document.original_name
+        pages_available = context_info.get("pages") or []
 
     messages, history_info = chat_context.build_messages(
         conv, question, decision["model"], new_images=images, system=system, exclude_ids=replaced_ids,
@@ -154,7 +166,9 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     return {
         "conv": conv, "question": question, "decision": decision, "messages": messages,
         "replaced_ids": replaced_ids, "document": document, "basis_detail": basis_detail,
+        "pages_available": pages_available,
         "usage": {"reason": decision["reason"], "source": "document"},
+        "think": think,
         "meta": {
             "routing": {"mode": "auto", "reason": decision["reason"], "explanation": decision["explanation"]},
             "context": {**context_info, **history_info},
@@ -166,9 +180,29 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
     }
 
 
+def document_basis(document, answer, question, detail, pages_available):
+    """Basis indicator + deterministic checks: numbers not in the document, invalid page citations."""
+    basis = reliability.basis("document", answer, detail)
+    warnings = []
+    if not basis["undetermined"]:
+        missing = verify.check_numbers(answer, document.extracted_text, question or "")
+        if missing:
+            warnings.append(f"Value{'s' if len(missing) > 1 else ''} not found in the document: {', '.join(missing)}")
+        bad = verify.check_citations(answer, pages_available)
+        if bad:
+            warnings.append(f"Cited page{'s' if len(bad) > 1 else ''} not given to the model: "
+                            f"{', '.join(map(str, bad))}")
+        good = [p for p in verify.cited_pages(answer) if p not in bad]
+        if good and document.file_type == "PDF":
+            basis["detail"] = f"{document.original_name} — p. {', '.join(map(str, good))}"
+    basis["warnings"] = warnings
+    return basis
+
+
 def finish_document_question(prepared, result) -> dict:
     """Record the exchange and build the response body."""
-    basis = reliability.basis("document", result["response"], prepared["basis_detail"])
+    basis = document_basis(prepared["document"], result["response"], prepared["question"],
+                           prepared["basis_detail"], prepared["pages_available"])
     chat_context.discard(prepared["replaced_ids"])
     # The document image is re-rendered on demand, so it is not stored as an attachment.
     chat_context.record_turn(prepared["conv"], prepared["question"], result["response"],
@@ -183,16 +217,16 @@ def finish_document_question(prepared, result) -> dict:
     }
 
 
-def ask_document_question(document, question=None, conversation_id=None, regenerate=False) -> dict:
+def ask_document_question(document, question=None, conversation_id=None, regenerate=False, think=None) -> dict:
     """
     Answer a question about a document using the routed local model, with the
     document's conversation history (backend-held, see chat/context.py).
     Returns {"answer", "model", "ollama_model", "routing", "context", "conversation_id", ...}.
     """
-    prepared = prepare_document_question(document, question, conversation_id, regenerate)
+    prepared = prepare_document_question(document, question, conversation_id, regenerate, think)
     try:
         result = generate_response(prepared["decision"]["model"], messages=prepared["messages"],
-                                   usage=prepared["usage"])
+                                   usage=prepared["usage"], think=prepared["think"])
     except ModelManagerError as exc:
         raise OllamaServiceError(exc.public_message) from exc
     return finish_document_question(prepared, result)
@@ -204,7 +238,7 @@ def summarize_document(document) -> dict:
     Returns {"summary", "model", "ollama_model", "routing"}.
     """
     model = get_model(ROUTE_TARGETS[REASON_GENERAL])
-    doc_text, context_info = fit_to_context(document.extracted_text, model.id, reserved_chars=1500)
+    doc_text, context_info = document_content(document, "", model.id, reserved_chars=1500)
     prompt = (
         f"{reliability.instruction('document')}\n\n"
         f"You are analyzing the document '{document.original_name}'.\n"
@@ -228,7 +262,7 @@ def summarize_document(document) -> dict:
     result = _run(model.ollama_name, prompt, usage={"reason": REASON_GENERAL, "source": "summary"})
     return {
         "summary": result["response"],
-        "basis": reliability.basis("document", result["response"], document.original_name),
+        "basis": document_basis(document, result["response"], "", document.original_name, context_info.get("pages")),
         "model": result["model"],
         "ollama_model": result["ollama_model"],
         "routing": {"mode": "fixed", "reason": REASON_GENERAL},

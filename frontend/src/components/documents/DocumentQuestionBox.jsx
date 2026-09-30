@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SquarePen, MessageSquareText } from 'lucide-react';
 import { streamDocumentQuestion } from '../../api/documentApi';
-import { getConversation, getLatestDocumentConversation } from '../../api/chatApi';
+import { getConversation, getLatestDocumentConversation, warmUp } from '../../api/chatApi';
+import { modelLabel } from '../../utils/modelLabels';
 import MessageBubble from '../MessageBubble';
 import MessageInput from '../MessageInput';
 
@@ -31,6 +32,10 @@ export default function DocumentQuestionBox({
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState(null);
+  const [think, setThink] = useState(false);
+
+  // Document questions are answered by qwen3 unless they are visual/coding: load it early.
+  useEffect(() => { warmUp('qwen3'); }, [documentId]);
   const endRef = useRef(null);
 
   // Restore the requested (or this document's latest) Q&A conversation from the backend.
@@ -66,10 +71,15 @@ export default function DocumentQuestionBox({
       timer = null;
       replace(msgId, { status: 'streaming', text: acc });
     };
-    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate }, (ev) => {
+    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate, think }, (ev) => {
       if (ev.type === 'start') {
         if (ev.conversation_id) setConversationId(ev.conversation_id);
-        replace(msgId, { model: ev.ollama_model, routing: ev.routing?.reason, routingExplanation: ev.routing?.explanation });
+        replace(msgId, {
+          model: ev.ollama_model, routing: ev.routing?.reason, routingExplanation: ev.routing?.explanation,
+          loadingModel: Boolean(ev.model_loading), loadingModelName: modelLabel(ev.ollama_model),
+        });
+      } else if (ev.type === 'thinking') {
+        replace(msgId, { loadingModel: false, thinking: true });
       } else if (ev.type === 'delta') {
         acc += ev.text;
         if (!timer) timer = setTimeout(flush, 50);
@@ -98,21 +108,21 @@ export default function DocumentQuestionBox({
     setMessages((prev) => [
       ...prev,
       { id: newId(), role: 'user', text: question },
-      { id: pendingId, role: 'assistant', status: 'pending' },
+      { id: pendingId, role: 'assistant', status: 'pending', startedAt: Date.now() },
     ]);
     ask({ question }, pendingId);
   };
 
   const handleRetry = (msg) => {
     if (busy || !msg.retry) return;
-    replace(msg.id, { status: 'pending', error: null });
+    replace(msg.id, { status: 'pending', error: null, startedAt: Date.now() });
     ask({ question: msg.retry }, msg.id);
   };
 
   const handleRegenerate = (msg) => {
     if (busy || !conversationId) return;
     const previous = { ...msg };
-    replace(msg.id, { status: 'pending', text: '', regenerateError: null });
+    replace(msg.id, { status: 'pending', text: '', regenerateError: null, startedAt: Date.now() });
     ask({ regenerate: true }, msg.id, previous);
   };
 
@@ -165,6 +175,8 @@ export default function DocumentQuestionBox({
           busy={busy}
           allowAttachments={false}
           showModelPicker={false}
+          think={think}
+          onThinkChange={setThink}
           placeholder={`Ask about ${documentName}…`}
           footnote="Answers are generated locally from this document. Verify important values against the original."
         />

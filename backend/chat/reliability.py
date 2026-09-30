@@ -25,12 +25,10 @@ import re
 from django.conf import settings
 
 CORE = (
-    "You are MRPL Local AI, an on-premise assistant for an industrial company. "
-    "Accuracy is more important than appearing confident. "
-    "Do not fabricate facts, numbers, names, measurements, components, references, citations or observations. "
-    "If the available information is insufficient to answer, say so clearly instead of guessing. "
-    "Distinguish observations from assumptions and inferences. "
-    "If something is ambiguous, explain the ambiguity rather than picking an answer."
+    "You are MRPL Local AI, an on-premise assistant for an industrial company. Accuracy matters more than "
+    "sounding confident: never fabricate facts, numbers, names, measurements, components, references or "
+    "observations; if information is insufficient, say so; separate observations from inferences; "
+    "explain ambiguity instead of guessing."
 )
 
 NOT_IN_DOCUMENT = "I could not find this information in the provided document."
@@ -38,35 +36,27 @@ NOT_IN_IMAGE = "This cannot be determined from the provided image."
 
 MODES = {
     "general": (
-        "Answer normally using your general knowledge; do not refuse ordinary questions. "
-        "Mark uncertain points as uncertain instead of presenting them as fact, and do not invent "
-        "specific statistics, dates, quotations, URLs or citations. If you do not know, say so."
+        "Answer normally from general knowledge; do not refuse ordinary questions. Flag uncertain points and "
+        "do not invent statistics, dates, quotations, URLs or citations."
     ),
     "document": (
-        "Answer only from the supplied document content, not from general knowledge or assumptions. "
-        "Do not fill gaps or invent missing values. "
-        f"If the document does not contain the requested information, say exactly: \"{NOT_IN_DOCUMENT}\" "
-        "and then, if helpful, mention what related information the document does contain. "
-        "If you infer something that the document does not state directly, label it as an inference."
+        "Answer only from the supplied document content, not from general knowledge; never fill gaps or invent "
+        f"values. If the answer is not in it, say exactly: \"{NOT_IN_DOCUMENT}\" Label any inference as such. "
+        "When the content is split into sections marked [p. N], cite the page as [p. N] after each fact."
     ),
     "image_text": (
-        "The user's image was converted to text with local OCR; answer only from that OCR text. "
-        "OCR can misread characters, so point out values that look garbled instead of correcting them silently. "
-        f"If the text does not contain the requested information, say exactly: \"{NOT_IN_DOCUMENT}\""
+        "The image was converted to text with local OCR; answer only from that text and point out values that "
+        f"look garbled. If the answer is not in it, say exactly: \"{NOT_IN_DOCUMENT}\""
     ),
     "vision": (
-        "Describe only what can actually be seen in the provided image(s). "
-        "When describing or analysing an image, organise the answer under **Observed**, **Inferred** "
-        "(only if you draw inferences) and **Cannot be determined** (only if relevant). "
-        "For a short factual question about the image, answer directly. "
-        "Never invent manufacturer names, exact models, measurements, capacities, certifications, "
-        "serial numbers, dates, technical specifications, hidden objects or unreadable text. "
-        f"If the image does not show the requested information, say exactly: \"{NOT_IN_IMAGE}\""
+        "Describe only what is visible. For descriptions use **Observed**, **Inferred** (if any) and "
+        "**Cannot be determined** (if relevant); answer short questions directly. Never invent manufacturers, "
+        "models, measurements, capacities, certifications, serial numbers, dates, specifications, hidden "
+        f"objects or unreadable text. If the image does not show it, say exactly: \"{NOT_IN_IMAGE}\""
     ),
     "coding": (
-        "You cannot run code: never say or imply that code was executed, tested, benchmarked or verified. "
-        "Avoid claims such as \"this works perfectly\"; say what the code should do and, where relevant, "
-        "state that you have not executed it and how the user can test it."
+        "You cannot run code: never say or imply that code was executed, tested or verified (no \"this works "
+        "perfectly\"). Say what it should do and how the user can test it."
     ),
 }
 
@@ -167,3 +157,16 @@ def chat_basis_kind(reason, sent_images, used_ocr, model=None):
     if reason == "coding" or (reason == "manual" and getattr(model, "capability", None) == "coding"):
         return "code"
     return "general"
+
+
+_EXECUTION_CLAIM = re.compile(
+    r"\b(?:i|we)\s+(?:have\s+)?(?:tested|ran|run|executed|verified|benchmarked)\b"
+    r"|\b(?:this|the)\s+code\s+(?:has\s+been|was)\s+(?:tested|executed|verified|run)\b"
+    r"|\bworks\s+perfectly\b|\b(?:tested|verified)\s+and\s+works\b",
+    re.IGNORECASE,
+)
+
+
+def execution_claims(text: str) -> bool:
+    """True if a coding answer claims the code was run/tested (the workbench never executes code)."""
+    return bool(_EXECUTION_CLAIM.search(text or ""))
