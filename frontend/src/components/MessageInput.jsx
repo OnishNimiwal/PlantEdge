@@ -1,6 +1,7 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { ArrowUp, Paperclip, X, Loader2, Brain } from 'lucide-react';
 import ModelSelector from './ModelSelector';
+import { useI18n } from '../utils/i18n';
 
 // Large images exhaust the 8 GB GPU in the vision model. The backend enforces the
 // limit too; resizing here just keeps uploads small.
@@ -39,15 +40,16 @@ const MessageInput = forwardRef(function MessageInput(
     limits,
     allowAttachments = true,
     showModelPicker = true,
-    placeholder = 'Ask anything…',
+    placeholder,
     think = false,
     onThinkChange,
     thinkAvailable = true,
     onImagesAttached,
-    footnote = 'Runs on-premise with local models. Responses can contain mistakes — verify important information.',
+    footnote,
   },
   ref,
 ) {
+  const { t } = useI18n();
   const maxImages = limits?.max_images_per_message || 1;
   const maxSide = limits?.vision_max_side || 1024;
   const [input, setInput] = useState('');
@@ -116,19 +118,19 @@ const MessageInput = forwardRef(function MessageInput(
     if (!files.length) return;
     setImageError(null);
     if (files.some((f) => !['image/png', 'image/jpeg'].includes(f.type))) {
-      setImageError('Only PNG and JPEG images are supported.');
+      setImageError(t('Only PNG and JPEG images are supported.'));
       return;
     }
     const room = maxImages - images.length;
     if (files.length > room) {
-      setImageError(`You can attach up to ${maxImages} image${maxImages > 1 ? 's' : ''} per message.`);
+      setImageError(t('You can attach up to {n} image(s) per message.', { n: maxImages }));
     }
     try {
       const resized = await Promise.all(files.slice(0, Math.max(room, 0)).map((f) => resizeImage(f, maxSide)));
       setImages((prev) => [...prev, ...resized]);
       onImagesAttached?.(); // e.g. start loading the vision model while the user types
     } catch (err) {
-      setImageError(err.message);
+      setImageError(t(err.message));
     }
   };
 
@@ -139,12 +141,12 @@ const MessageInput = forwardRef(function MessageInput(
           <div className="composer-attachments">
             {images.map((src, idx) => (
               <div className="composer-thumb" key={idx}>
-                <img src={src} alt={`Attachment ${idx + 1}`} />
+                <img src={src} alt={t('Attachment {n}', { n: idx + 1 })} />
                 <button
                   type="button"
                   onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
-                  aria-label="Remove image"
-                  title="Remove image"
+                  aria-label={t('Remove image')}
+                  title={t('Remove image')}
                 >
                   <X size={12} />
                 </button>
@@ -162,9 +164,9 @@ const MessageInput = forwardRef(function MessageInput(
             autoSize();
           }}
           onKeyDown={handleKeyDown}
-          placeholder={placeholder}
+          placeholder={placeholder ?? t('Ask anything…')}
           rows={1}
-          aria-label="Message"
+          aria-label={t('Message')}
         />
 
         <div className="composer-toolbar">
@@ -176,8 +178,8 @@ const MessageInput = forwardRef(function MessageInput(
                   className="icon-btn"
                   onClick={() => fileRef.current?.click()}
                   disabled={images.length >= maxImages}
-                  title={`Attach images (PNG/JPEG, up to ${maxImages})`}
-                  aria-label="Attach images"
+                  title={t('Attach images (PNG/JPEG, up to {n})', { n: maxImages })}
+                  aria-label={t('Attach images')}
                 >
                   <Paperclip size={18} />
                 </button>
@@ -201,11 +203,11 @@ const MessageInput = forwardRef(function MessageInput(
                 onClick={() => onThinkChange(!think)}
                 aria-pressed={think}
                 title={think
-                  ? 'Think deeper is on: step-by-step reasoning, slower answers'
-                  : 'Think deeper: step-by-step reasoning for hard questions (slower)'}
+                  ? t('Think deeper is on: step-by-step reasoning, slower answers')
+                  : t('Think deeper: step-by-step reasoning for hard questions (slower)')}
               >
                 <Brain size={15} />
-                <span>{think ? 'Thinking on' : 'Think deeper'}</span>
+                <span>{think ? t('Thinking on') : t('Think deeper')}</span>
               </button>
             )}
           </div>
@@ -213,15 +215,15 @@ const MessageInput = forwardRef(function MessageInput(
             type="submit"
             className="send-btn"
             disabled={busy || !input.trim()}
-            title="Send (Enter)"
-            aria-label="Send message"
+            title={t('Send (Enter)')}
+            aria-label={t('Send message')}
           >
             {busy ? <Loader2 size={18} className="spin" /> : <ArrowUp size={18} />}
           </button>
         </div>
       </div>
       <div className={`composer-footnote ${imageError ? 'is-error' : ''}`}>
-        {imageError || footnote}
+        {imageError || (footnote ?? t('Runs on-premise with local models. Responses can contain mistakes — verify important information.'))}
       </div>
     </form>
   );

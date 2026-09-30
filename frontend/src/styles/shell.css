@@ -492,3 +492,53 @@ button {
     transition: none;
   }
 }
+
+/* ---- Sidebar: "Show more" and the language switch ----------------------- */
+
+.conv-more {
+  display: block;
+  width: calc(100% - 0.5rem);
+  margin: 0.35rem 0.25rem 0.6rem;
+  padding: 0.45rem;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.conv-more:hover:not(:disabled) { background: var(--bg-subtle); color: var(--text-primary); }
+.conv-more:disabled { cursor: progress; }
+
+.sidebar-footer-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lang-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-left: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.lang-toggle button {
+  min-width: 30px;
+  padding: 0.15rem 0.45rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.lang-toggle button.is-active {
+  background: var(--accent-primary);
+  color: var(--on-accent);
+}
+
+.lang-toggle button:not(.is-active):hover { background: var(--bg-subtle); }

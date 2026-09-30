@@ -18,9 +18,11 @@ import Markdown from '../LazyMarkdown';
 import CopyButton from '../CopyButton';
 import { BasisIndicator } from '../MessageBubble';
 import { modelMeta } from '../../utils/modelLabels';
+import { useI18n } from '../../utils/i18n';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
 
 export default function DocumentViewer({ document, onDelete, onImageClick, conversationId, onConversationsChanged }) {
+  const { t, lang } = useI18n();
   const [activeTab, setActiveTab] = useState('qa'); // 'qa' | 'summary' | 'text'
   const [summary, setSummary] = useState(null);
   const [summaryMeta, setSummaryMeta] = useState(null);
@@ -36,8 +38,8 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
     return (
       <div className="doc-viewer-empty">
         <FileText size={48} className="empty-icon-subtle" />
-        <h3>Select a document</h3>
-        <p>Choose an uploaded file from the left panel to review its contents, ask questions, or generate a Word report.</p>
+        <h3>{t('Select a document')}</h3>
+        <p>{t('Choose an uploaded file from the left panel to review its contents, ask questions, or generate a Word report.')}</p>
       </div>
     );
   }
@@ -47,17 +49,17 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
     return (
       <div className="doc-viewer-empty doc-processing" role="status" aria-live="polite">
         {failed ? <AlertTriangle size={40} /> : <Loader2 size={40} className="spin-icon" />}
-        <h3>{failed ? 'Processing failed' : 'Processing document…'}</h3>
+        <h3>{failed ? t('Processing failed') : t('Processing document…')}</h3>
         <p>
           {failed
-            ? document.processing_error || 'The document could not be processed.'
+            ? document.processing_error || t('The document could not be processed.')
             : document.progress_total
-              ? `Reading page ${Math.min(document.progress_done + 1, document.progress_total)} of ${document.progress_total}. Scanned pages take a few seconds each.`
-              : 'Extracting text. Scanned pages are read with local OCR.'}
+              ? t('Reading page {done} of {total}. Scanned pages take a few seconds each.', { done: Math.min(document.progress_done + 1, document.progress_total), total: document.progress_total })
+              : t('Extracting text. Scanned pages are read with local OCR.')}
         </p>
         {failed && (
           <button className="action-btn danger" onClick={() => onDelete(document.id)}>
-            <Trash2 size={15} /> <span>Remove</span>
+            <Trash2 size={15} /> <span>{t('Remove')}</span>
           </button>
         )}
       </div>
@@ -68,27 +70,27 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
   const limitWarnings = [];
   if (document.truncated) {
     limitWarnings.push(
-      `Only the first ${maxChars.toLocaleString()} of ${(document.original_chars || 0).toLocaleString()} extracted characters were kept (DOCUMENT_MAX_CHARS).`
+      t('Only the first {kept} of {total} extracted characters were kept (DOCUMENT_MAX_CHARS).', { kept: maxChars.toLocaleString(), total: (document.original_chars || 0).toLocaleString() })
     );
   }
   if (document.complex_layout) {
     limitWarnings.push(
-      'Table or multi-column layout detected: extracted text is flattened line by line, so columns may be interleaved. Check tables against the original.'
+      t('Table or multi-column layout detected: tables and columns were reconstructed from the OCR layout. Check tables against the original.')
     );
   }
   if (document.ocr_pages > 0 && document.ocr_confidence != null && document.ocr_confidence < 0.85) {
     limitWarnings.push(
-      'Low OCR recognition confidence: the scan may be poor quality, rotated, handwritten or in a different language. Verify important values against the original.'
+      t('Low OCR recognition confidence: the scan may be poor quality, rotated, handwritten or in a different language. Verify important values against the original.')
     );
   }
   if (document.vision_fallback_pages > 0) {
     limitWarnings.push(
-      `${document.vision_fallback_pages} page(s) had low OCR confidence (e.g. handwriting or a poor scan) and were transcribed by the vision model instead. A vision model can misread or invent text: verify against the original.`
+      t('{n} page(s) had low OCR confidence (e.g. handwriting or a poor scan) and were transcribed by the vision model instead. A vision model can misread or invent text: verify against the original.', { n: document.vision_fallback_pages })
     );
   }
   if (document.ocr_pages_skipped > 0) {
     limitWarnings.push(
-      `${document.ocr_pages_skipped} scanned page(s) were not OCR'd: the limit is ${document.limits?.max_ocr_pages} OCR pages per PDF (OCR_MAX_PDF_PAGES).`
+      t("{n} scanned page(s) were not OCR'd: the limit is {max} OCR pages per PDF (OCR_MAX_PDF_PAGES).", { n: document.ocr_pages_skipped, max: document.limits?.max_ocr_pages })
     );
   }
 
@@ -98,15 +100,15 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
     setSummaryError(null);
 
     try {
-      const res = await summarizeDocument(document.id);
+      const res = await summarizeDocument(document.id, lang);
       if (res && res.success && res.summary) {
         setSummary(res.summary);
         setSummaryMeta({ model: res.ollama_model, routing: res.routing?.reason, context: res.context, basis: res.basis });
       } else {
-        setSummaryError(res?.error || "Failed to generate summary from local AI.");
+        setSummaryError(res?.error || t('Failed to generate summary from local AI.'));
       }
     } catch (err) {
-      setSummaryError(err.message || "Error generating document summary.");
+      setSummaryError(err.message || t('Error generating document summary.'));
     } finally {
       setSummaryLoading(false);
     }
@@ -121,10 +123,10 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
       const filename = `${baseName}_MRPL_Report.docx`;
       const res = await downloadDocumentReport(document.id, summary || "", filename);
       if (!res.success) {
-        setDownloadError(res.error || "Failed to generate Word report.");
+        setDownloadError(res.error || t('Failed to generate Word report.'));
       }
     } catch (err) {
-      setDownloadError(err.message || "Failed to download Word report.");
+      setDownloadError(err.message || t('Failed to download Word report.'));
     } finally {
       setDownloadingDocx(false);
     }
@@ -140,33 +142,33 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
               {document.file_type}
             </span>
             <h2 className="doc-header-title">{document.original_name}</h2>
-            <span className="status-chip is-ready" title="Text extracted; ready for questions and summaries">
-              <CheckCircle2 size={12} /> Ready
+            <span className="status-chip is-ready" title={t('Text extracted; ready for questions and summaries')}>
+              <CheckCircle2 size={12} /> {t('Ready')}
             </span>
           </div>
 
           <div className="doc-meta-badges">
             <span className="meta-badge">
               <Calendar size={13} />
-              {new Date(document.uploaded_at).toLocaleString()}
+              {new Date(document.uploaded_at).toLocaleString(lang === 'hi' ? 'hi-IN' : undefined)}
             </span>
             <span className="meta-badge">
               <Layers size={13} />
-              {(document.extracted_text || "").length.toLocaleString()} / {maxChars.toLocaleString()} chars
+              {t('{n} chars', { n: `${(document.extracted_text || '').length.toLocaleString()} / ${maxChars.toLocaleString()}` })}
             </span>
             {document.ocr_pages > 0 && (
               <span
                 className="meta-badge ocr"
-                title="Text extracted locally with PaddleOCR. Recognition confidence is PaddleOCR's own score for the text it found; it is not a measured accuracy and can be high even when text is misread or missing."
+                title={t("Text extracted locally with PaddleOCR. Recognition confidence is PaddleOCR's own score for the text it found; it is not a measured accuracy and can be high even when text is misread or missing.")}
               >
                 <ScanText size={13} />
-                OCR{document.ocr_lang ? ` (${document.ocr_lang})` : ''} · {document.ocr_pages} page{document.ocr_pages > 1 ? 's' : ''}
-                {document.ocr_confidence != null && ` · recognition confidence ${Math.round(document.ocr_confidence * 100)}%`}
+                OCR{document.ocr_lang ? ` (${document.ocr_lang})` : ''} · {t('{n} page(s)', { n: document.ocr_pages })}
+                {document.ocr_confidence != null && ` · ${t('recognition confidence')} ${Math.round(document.ocr_confidence * 100)}%`}
               </span>
             )}
             {document.truncated && (
-              <span className="meta-badge warning" title={`Text was capped at ${maxChars.toLocaleString()} characters`}>
-                <AlertTriangle size={12} /> Capped at {maxChars.toLocaleString()} chars
+              <span className="meta-badge warning" title={t('Text was capped at {n} characters', { n: maxChars.toLocaleString() })}>
+                <AlertTriangle size={12} /> {t('Capped at {n} chars', { n: maxChars.toLocaleString() })}
               </span>
             )}
           </div>
@@ -178,30 +180,30 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
             className="action-btn primary"
             onClick={handleGenerateSummary}
             disabled={summaryLoading}
-            title="Generate AI Summary"
+            title={t('Generate AI Summary')}
           >
             {summaryLoading ? <Loader2 size={15} className="spin-icon" /> : <Sparkles size={15} />}
-            <span>{summary ? 'Regenerate Summary' : 'Generate Summary'}</span>
+            <span>{summary ? t('Regenerate Summary') : t('Generate Summary')}</span>
           </button>
 
           <button
             className="action-btn secondary"
             onClick={handleDownloadReport}
             disabled={downloadingDocx}
-            title="Export and download Word report (.docx)"
+            title={t('Export and download Word report (.docx)')}
           >
             {downloadingDocx ? <Loader2 size={15} className="spin-icon" /> : <Download size={15} />}
-            <span>Export DOCX</span>
+            <span>{t('Export DOCX')}</span>
           </button>
 
           <button
             className="action-btn danger"
             onClick={() => {
-              if (window.confirm(`Are you sure you want to delete "${document.original_name}"?`)) {
+              if (window.confirm(t('Are you sure you want to delete "{name}"?', { name: document.original_name }))) {
                 onDelete(document.id);
               }
             }}
-            title="Delete this document"
+            title={t('Delete this document')} aria-label={t('Delete this document')}
           >
             <Trash2 size={15} />
           </button>
@@ -229,7 +231,7 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
           onClick={() => setActiveTab('qa')}
         >
           <MessageSquare size={16} />
-          <span>Document Q&A</span>
+          <span>{t('Document Q&A')}</span>
         </button>
 
         <button
@@ -237,8 +239,8 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
           onClick={() => setActiveTab('summary')}
         >
           <Sparkles size={16} />
-          <span>AI Executive Summary</span>
-          {summary && <span className="tab-pill">Ready</span>}
+          <span>{t('AI Executive Summary')}</span>
+          {summary && <span className="tab-pill">{t('Ready')}</span>}
         </button>
 
         <button
@@ -246,7 +248,7 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
           onClick={() => setActiveTab('text')}
         >
           <FileCode size={16} />
-          <span>Extracted Text</span>
+          <span>{t('Extracted Text')}</span>
         </button>
       </div>
 
@@ -268,32 +270,36 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
             {summaryLoading ? (
               <div className="summary-loading-state">
                 <Loader2 size={32} className="spin-icon text-primary" />
-                <p>Generating executive summary with local Qwen model...</p>
-                <span>Processing on PC5 with zero external cloud calls</span>
+                <p>{t('Generating executive summary with the local Qwen model…')}</p>
+                <span>{t('Processed on this machine with no external cloud calls')}</span>
               </div>
             ) : summaryError ? (
               <div className="summary-error-state">
                 <AlertTriangle size={24} />
                 <p>{summaryError}</p>
                 <button className="retry-btn" onClick={handleGenerateSummary}>
-                  Try Again
+                  {t('Try Again')}
                 </button>
               </div>
             ) : summary ? (
               <div className="summary-card">
                 <div className="summary-card-header">
                   <div>
-                    <h3>Executive Summary</h3>
+                    <h3>{t('Executive Summary')}</h3>
                     {summaryMeta?.model && (
-                      <span className="msg-meta-detail">MRPL Local AI · {modelMeta(summaryMeta.model, summaryMeta.routing)}</span>
+                      <span className="msg-meta-detail">{t('MRPL Local AI')} · {modelMeta(summaryMeta.model, summaryMeta.routing, t)}</span>
                     )}
                   </div>
-                  <CopyButton getText={() => summaryRef.current?.innerText?.trim() || summary} label="Copy" />
+                  <CopyButton getText={() => summaryRef.current?.innerText?.trim() || summary} />
                 </div>
                 {summaryMeta?.context?.context_truncated && (
                   <span className="context-note">
-                    The model read the first {summaryMeta.context.context_chars_used.toLocaleString()} of{' '}
-                    {summaryMeta.context.document_chars.toLocaleString()} characters (model context window limit).
+                    {summaryMeta.context.retrieval
+                      ? t('Long document: {used} sections spread across the document were used.', { used: summaryMeta.context.sections_used })
+                      : t('The model read the first {used} of {total} characters (model context window limit).', {
+                        used: summaryMeta.context.context_chars_used.toLocaleString(),
+                        total: summaryMeta.context.document_chars.toLocaleString(),
+                      })}
                   </span>
                 )}
                 <BasisIndicator basis={summaryMeta?.basis} />
@@ -304,11 +310,11 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
             ) : (
               <div className="summary-empty-state">
                 <Sparkles size={36} className="sparkles-icon" />
-                <h3>No summary generated yet</h3>
-                <p>Click "Generate Summary" to have the local AI summarize this document.</p>
+                <h3>{t('No summary generated yet')}</h3>
+                <p>{t('Click "Generate Summary" to have the local AI summarize this document.')}</p>
                 <button className="action-btn primary" onClick={handleGenerateSummary}>
                   <Sparkles size={15} />
-                  <span>Generate Summary</span>
+                  <span>{t('Generate Summary')}</span>
                 </button>
               </div>
             )}
@@ -319,12 +325,12 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
           <div className="doc-text-panel">
             <div className="text-panel-header">
               <span className="text-char-info">
-                Raw Extracted Content ({(document.extracted_text || "").length.toLocaleString()} characters)
+                {t('Raw Extracted Content ({n} characters)', { n: (document.extracted_text || '').length.toLocaleString() })}
               </span>
-              <CopyButton getText={() => document.extracted_text || ''} label="Copy text" />
+              <CopyButton getText={() => document.extracted_text || ''} label={t('Copy text')} />
             </div>
             <pre className="extracted-text-viewer">
-              {document.extracted_text || "No text available."}
+              {document.extracted_text || t('No text available.')}
             </pre>
           </div>
         )}

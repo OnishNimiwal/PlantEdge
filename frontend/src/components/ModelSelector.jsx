@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronDown } from 'lucide-react';
 import { modelLabel } from '../utils/modelLabels';
+import { useI18n } from '../utils/i18n';
 
 const CAPABILITY = { reasoning: 'General', coding: 'Coding', vision: 'Vision' };
 
@@ -9,19 +10,20 @@ const CAPABILITY = { reasoning: 'General', coding: 'Coding', vision: 'Vision' };
  * overrides the router for the next messages.
  */
 export default function ModelSelector({ models, value, onChange, disabled }) {
+  const { t } = useI18n();
   if (!models || models.length === 0) return null;
   return (
-    <label className="model-pill" title="Model: Auto lets the workbench pick the best local model">
+    <label className="model-pill" title={t('Model: Auto lets the workbench pick the best local model')}>
       <select
         value={value || 'auto'}
         onChange={(e) => onChange && onChange(e.target.value)}
         disabled={disabled}
-        aria-label="Model"
+        aria-label={t('Model')}
       >
-        <option value="auto">Auto</option>
+        <option value="auto">{t('Auto')}</option>
         {models.map((m) => (
           <option key={m.id} value={m.id}>
-            {modelLabel(m.id)} · {CAPABILITY[m.capability] || m.capability}
+            {modelLabel(m.id)} · {CAPABILITY[m.capability] ? t(CAPABILITY[m.capability]) : m.capability}
           </option>
         ))}
       </select>

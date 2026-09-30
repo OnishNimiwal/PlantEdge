@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { SquarePen, MessageSquareText } from 'lucide-react';
+import { useI18n } from '../../utils/i18n';
 import { streamDocumentQuestion } from '../../api/documentApi';
 import { getConversation, getLatestDocumentConversation, warmUp } from '../../api/chatApi';
 import { modelLabel } from '../../utils/modelLabels';
@@ -9,27 +10,24 @@ import MessageInput from '../MessageInput';
 let seq = 0;
 const newId = () => `d${Date.now()}-${seq++}`;
 
-function footnotes(res) {
+function footnotes(res, t) {
   const notes = [];
   if (res.vision_pages?.length && res.page_count > 1) {
-    notes.push(
-      `Visual analysis used page${res.vision_pages.length > 1 ? 's' : ''} ${res.vision_pages.join(', ')} of ${res.page_count}. ` +
-      'Mention "page N" in your question to look at another page.'
-    );
+    notes.push(t('Visual analysis used page(s) {pages} of {total}. Mention "page N" in your question to look at another page.',
+      { pages: res.vision_pages.join(', '), total: res.page_count }));
   }
   if (res.pages_not_covered > 0) {
-    notes.push(`${res.pages_not_covered} later page(s) were not analysed (limit per question). Ask about "pages N–M" to see them.`);
+    notes.push(t('{n} later page(s) were not analysed (limit per question). Ask about "pages N–M" to see them.', { n: res.pages_not_covered }));
   }
   if (res.context?.retrieval) {
-    notes.push(
-      `Long document: the ${res.context.sections_used} most relevant of ${res.context.sections_total} sections were used` +
-      (res.context.pages?.length ? ` (pages ${res.context.pages.join(', ')}).` : '.')
-    );
+    notes.push(res.context.pages?.length
+      ? t('Long document: the {used} most relevant of {total} sections were used (pages {pages}).',
+        { used: res.context.sections_used, total: res.context.sections_total, pages: res.context.pages.join(', ') })
+      : t('Long document: the {used} most relevant of {total} sections were used.',
+        { used: res.context.sections_used, total: res.context.sections_total }));
   } else if (res.context?.context_truncated) {
-    notes.push(
-      `Answer based on the first ${res.context.context_chars_used.toLocaleString()} of ` +
-      `${res.context.document_chars.toLocaleString()} characters (model context limit).`
-    );
+    notes.push(t('Answer based on the first {used} of {total} characters (model context limit).',
+      { used: res.context.context_chars_used.toLocaleString(), total: res.context.document_chars.toLocaleString() }));
   }
   return notes;
 }
@@ -37,6 +35,7 @@ function footnotes(res) {
 export default function DocumentQuestionBox({
   documentId, documentName, onImageClick, initialConversationId, onConversationsChanged,
 }) {
+  const { t, lang } = useI18n();
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   const [conversationId, setConversationId] = useState(null);
@@ -79,13 +78,15 @@ export default function DocumentQuestionBox({
       timer = null;
       replace(msgId, { status: 'streaming', text: acc });
     };
-    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate, think }, (ev) => {
+    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate, think, language: lang }, (ev) => {
       if (ev.type === 'start') {
         if (ev.conversation_id) setConversationId(ev.conversation_id);
         replace(msgId, {
           model: ev.ollama_model, routing: ev.routing?.reason, routingExplanation: ev.routing?.explanation,
           loadingModel: Boolean(ev.model_loading), loadingModelName: modelLabel(ev.ollama_model),
         });
+      } else if (ev.type === 'stage') {
+        replace(msgId, { loadingModel: false, stage: ev.stage, stageLabel: ev.label });
       } else if (ev.type === 'thinking') {
         replace(msgId, { loadingModel: false, thinking: true });
       } else if (ev.type === 'delta') {
@@ -99,14 +100,14 @@ export default function DocumentQuestionBox({
       if (final.conversation_id) setConversationId(final.conversation_id);
       replace(msgId, {
         status: 'done', text: final.answer, model: final.ollama_model, routing: final.routing?.reason,
-        routingExplanation: final.routing?.explanation, footnotes: footnotes(final), regenerateError: null,
+        routingExplanation: final.routing?.explanation, footnotes: footnotes(final, t), regenerateError: null,
         basis: final.basis || null,
       });
       onConversationsChanged?.();
     } else if (previous) {
-      replace(msgId, { ...previous, status: 'done', regenerateError: `Regenerate failed: ${final.error}` });
+      replace(msgId, { ...previous, status: 'done', regenerateError: t('Regenerate failed: {error}', { error: final.error }) });
     } else {
-      replace(msgId, { status: 'error', error: final.error || 'Failed to get an answer from the local AI.', retry: question });
+      replace(msgId, { status: 'error', error: final.error || t('Failed to get an answer from the local AI.'), retry: question });
     }
   };
 
@@ -148,8 +149,8 @@ export default function DocumentQuestionBox({
         {messages.length === 0 ? (
           <div className="doc-qa-empty">
             <MessageSquareText size={28} />
-            <p>Ask anything about <strong>{documentName}</strong></p>
-            <span>Answers come from the document's text; visual questions ("what does the drawing on page 2 show?") use the vision model.</span>
+            <p>{t('Ask anything about')} <strong>{documentName}</strong></p>
+            <span>{t('Answers come from the document\'s text; visual questions ("what does the drawing on page 2 show?") use the vision model.')}</span>
           </div>
         ) : (
           <div className="chat-thread is-compact">
@@ -173,8 +174,8 @@ export default function DocumentQuestionBox({
           className="icon-btn doc-qa-new"
           onClick={handleNew}
           disabled={busy || messages.length === 0}
-          title="Start a new Q&A conversation for this document"
-          aria-label="New Q&A conversation"
+          title={t('Start a new Q&A conversation for this document')}
+          aria-label={t('New Q&A conversation')}
         >
           <SquarePen size={17} />
         </button>
@@ -185,8 +186,8 @@ export default function DocumentQuestionBox({
           showModelPicker={false}
           think={think}
           onThinkChange={setThink}
-          placeholder={`Ask about ${documentName}…`}
-          footnote="Answers are generated locally from this document. Verify important values against the original."
+          placeholder={t('Ask about {name}…', { name: documentName })}
+          footnote={t('Answers are generated locally from this document. Verify important values against the original.')}
         />
       </div>
     </div>

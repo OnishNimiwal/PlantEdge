@@ -79,7 +79,22 @@ def prepare_turn(data, image_info):
     """
     data = dict(data)
     replaced_ids, reused_ocr = (), ""
-    if data.get("regenerate"):
+    if data.get("edit_from"):
+        # Edit (or regenerate) an earlier turn: that user message and everything after it
+        # are replaced once the new answer succeeds. Images of the original message are
+        # kept unless new ones are sent; OCR text is reused only if the text is unchanged.
+        conv = ctx.load(data["conversation_id"], create=False)
+        turn = ctx.turn_from(conv, data["edit_from"]) if conv else None
+        if not turn:
+            return _error("That message cannot be edited.", status.HTTP_400_BAD_REQUEST), None
+        replaced_ids = turn["ids"]
+        if data.get("regenerate") or not data.get("message"):
+            data["message"] = turn["message"]
+        if data["message"] == turn["message"]:
+            reused_ocr = turn["extra_context"]
+        if not data.get("images"):
+            data["images"], image_info = turn["images"] or None, turn["image_info"]
+    elif data.get("regenerate"):
         # Re-run the last question (same images / OCR text). The old answer is
         # only removed once the new one succeeds.
         conv = ctx.load(data["conversation_id"], create=False)
@@ -136,7 +151,9 @@ def prepare_turn(data, image_info):
     mode = reliability.mode_for(
         selection["reason"], model_obj, bool(images_for_model) or signals.get("image_available", False),
     )
-    system = reliability.system_prompt(mode, getattr(settings, "CHAT_SYSTEM_PROMPT", "")) or None
+    system = reliability.system_prompt(
+        mode, getattr(settings, "CHAT_SYSTEM_PROMPT", ""), reliability.language_instruction(data.get("language")),
+    ) or None
     chain = selection["reason"] == REASON_VISION_CODING and bool(data.get("images"))
     if chain:
         images_for_model = None  # the coder receives the vision model's description instead
@@ -226,7 +243,7 @@ def finish_turn(turn, result):
     if turn["basis_kind"] == "code" and reliability.execution_claims(result["response"]):
         basis["warnings"].append("The answer says the code was run or tested, but the workbench did not execute it.")
     ctx.discard(turn["replaced_ids"])
-    ctx.record_turn(
+    user_msg, assistant_msg = ctx.record_turn(
         turn["conv"], turn["data"]["message"], result["response"], model_tag=result["ollama_model"],
         reason=turn["selection"]["reason"], images=turn["data"].get("images"),
         image_info=turn["image_info"], extra_context=turn["extra_context"], basis=basis,
@@ -234,6 +251,8 @@ def finish_turn(turn, result):
     return {
         "success": True,
         "conversation_id": str(turn["conv"].id),
+        "user_message_id": user_msg.id,
+        "assistant_message_id": assistant_msg.id,
         "response": result["response"],
         "model": result["model"],
         "ollama_model": result["ollama_model"],
@@ -399,14 +418,21 @@ class ConversationListAPIView(APIView):
         q = (request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(Q(title__icontains=q) | Q(messages__content__icontains=q)).distinct()
+        try:
+            offset = max(0, int(request.query_params.get("offset", 0)))
+            limit = min(200, max(1, int(request.query_params.get("limit", 50))))
+        except ValueError:
+            offset, limit = 0, 50
+        rows = list(qs.order_by("-updated_at")[offset:offset + limit + 1])
+        page, has_more = rows[:limit], len(rows) > limit
         return Response({"conversations": [
             {
                 "id": str(c.id), "title": c.title, "updated_at": c.updated_at,
                 "document_id": c.document_id,
                 "document_name": c.document.original_name if c.document_id else None,
             }
-            for c in qs.order_by("-updated_at")[:50]
-        ]})
+            for c in page
+        ], "has_more": has_more, "offset": offset})
 
 
 class ConversationDetailAPIView(APIView):

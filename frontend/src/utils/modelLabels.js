@@ -27,12 +27,12 @@ export function modelLabel(idOrTag) {
   return MODEL_LABELS[idOrTag] || idOrTag;
 }
 
-export function routingLabel(reason) {
+export function routingLabel(reason, t = (s) => s) {
   if (!reason) return null;
-  return ROUTING_LABELS[reason] || reason;
+  return ROUTING_LABELS[reason] ? t(ROUTING_LABELS[reason]) : reason;
 }
 
-/** "Qwen2.5-Coder 7B · Coding" */
-export function modelMeta(model, reason) {
-  return [modelLabel(model), routingLabel(reason)].filter(Boolean).join(' · ');
+/** "Qwen2.5-Coder 7B · Coding" (pass the i18n `t` to translate the routing part) */
+export function modelMeta(model, reason, t) {
+  return [modelLabel(model), routingLabel(reason, t)].filter(Boolean).join(' · ');
 }

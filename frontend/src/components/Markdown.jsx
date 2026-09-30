@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import rehypeHighlightSubset from '../utils/highlight';
+import rehypeHighlightSubset, { ensureLanguages, missingLanguages } from '../utils/highlight';
 import CopyButton from './CopyButton';
 
 const LANGUAGE_NAMES = {
@@ -33,7 +33,7 @@ function CodeBlock({ node, children }) {
     <div className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
-        <CopyButton getText={() => raw} label="Copy" className="code-copy" />
+        <CopyButton getText={() => raw} className="code-copy" />
       </div>
       <pre>{children}</pre>
     </div>
@@ -50,11 +50,40 @@ const components = {
   ),
 };
 
+const FENCE = /^([ \t]*)(```|~~~)[ \t]*([\w-]*)[ \t]*\n([\s\S]*?)\n\1\2[ \t]*$/gm;
+const TABLE_ROW = /^\s*\|.*\|\s*$/;
+const TABLE_SEP = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+/**
+ * Models sometimes put a Markdown table inside a code fence (```markdown ... ```), which
+ * would show it as raw pipes. Unwrap fences without a real programming language whose
+ * content is a table, so it renders as a table.
+ */
+export function unwrapFencedTables(text) {
+  return (text || '').replace(FENCE, (block, indent, fence, lang, body) => {
+    if (lang && !['markdown', 'md', 'text', 'txt', 'plaintext', 'table'].includes(lang.toLowerCase())) return block;
+    const lines = body.split('\n').filter((l) => l.trim());
+    const isTable = lines.length >= 2 && TABLE_SEP.test(lines[1]) && lines.every((l) => TABLE_ROW.test(l) || TABLE_SEP.test(l));
+    return isTable ? `\n${body.replace(new RegExp(`^${indent}`, 'gm'), '')}\n` : block;
+  });
+}
+
 /**
  * Renders model output as Markdown (GFM tables, lists, code with highlighting).
  * Raw HTML in the text is NOT rendered (react-markdown default) - safer for model output.
  */
 export default function Markdown({ text }) {
+  const source = useMemo(() => unwrapFencedTables(text), [text]);
+  const [, setLoaded] = useState(0);
+  const missing = missingLanguages(source).join(',');
+  // Fetch grammars for languages outside the built-in set, then re-render highlighted.
+  useEffect(() => {
+    if (!missing) return undefined;
+    let alive = true;
+    ensureLanguages(missing.split(',')).then(() => alive && setLoaded((n) => n + 1));
+    return () => { alive = false; };
+  }, [missing]);
+
   return (
     <div className="markdown">
       <ReactMarkdown
@@ -62,7 +91,7 @@ export default function Markdown({ text }) {
         rehypePlugins={[rehypeHighlightSubset]}
         components={components}
       >
-        {text || ''}
+        {source}
       </ReactMarkdown>
     </div>
   );

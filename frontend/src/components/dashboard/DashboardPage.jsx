@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   RefreshCw, Activity, CheckCircle2, XCircle, CalendarDays, Server, Cpu, ScanText, AlertTriangle, Gauge,
 } from 'lucide-react';
+import { useI18n } from '../../utils/i18n';
 import { getUsage, getSystemStatus } from '../../api/dashboardApi';
 import { modelLabel } from '../../utils/modelLabels';
 
@@ -12,13 +13,13 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
-function timeAgo(iso) {
-  if (!iso) return 'Not used yet';
+function timeAgo(iso, t, lang) {
+  if (!iso) return t('Not used yet');
   const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return 'Just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
-  return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+  if (seconds < 60) return t('Just now');
+  if (seconds < 3600) return t('{n} min ago', { n: Math.floor(seconds / 60) });
+  if (seconds < 86400) return t('{n} h ago', { n: Math.floor(seconds / 3600) });
+  return new Date(iso).toLocaleDateString(lang === 'hi' ? 'hi-IN' : [], { day: 'numeric', month: 'short', year: 'numeric' });
 }
 
 function StatCard({ icon: Icon, label, value, tone }) {
@@ -53,15 +54,17 @@ function BarList({ rows, total }) {
 
 /** state: ready | unavailable | checking */
 function StatusPill({ state, label }) {
+  const { t } = useI18n();
   return (
     <span className={`status-pill is-${state}`}>
       <span className="status-dot" aria-hidden="true" />
-      {state === 'checking' ? 'Checking…' : label}
+      {state === 'checking' ? t('Checking…') : t(label)}
     </span>
   );
 }
 
 function UsageSection() {
+  const { t, lang } = useI18n();
   const [usage, setUsage] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -78,48 +81,48 @@ function UsageSection() {
     key: m.model, label: modelLabel(m.model), value: m.queries, tone: `tone-${i % 3}`,
   }));
   const routingRows = Object.entries(usage?.routing || {}).map(([k, v], i) => ({
-    key: k, label: CATEGORY_LABELS[k] || k, value: v, tone: `tone-${i % 3}`,
+    key: k, label: CATEGORY_LABELS[k] ? t(CATEGORY_LABELS[k]) : k, value: v, tone: `tone-${i % 3}`,
   }));
 
   return (
     <section className="dash-section" aria-labelledby="usage-heading">
       <div className="dash-section-head">
         <div>
-          <h2 id="usage-heading">Usage Dashboard</h2>
-          <p>How the local models are being used. Counts are requests, not a measure of answer quality.</p>
+          <h2 id="usage-heading">{t('Usage Dashboard')}</h2>
+          <p>{t('How the local models are being used. Counts are requests, not a measure of answer quality.')}</p>
         </div>
         <button type="button" className="dash-btn" onClick={load} disabled={loading}>
-          <RefreshCw size={14} className={loading ? 'spin' : ''} /> Refresh
+          <RefreshCw size={14} className={loading ? 'spin' : ''} /> {t('Refresh')}
         </button>
       </div>
 
       {usage?.error ? (
         <div className="dash-error"><AlertTriangle size={15} /> {usage.error}</div>
       ) : !usage ? (
-        <div className="dash-placeholder">Loading usage…</div>
+        <div className="dash-placeholder">{t('Loading usage…')}</div>
       ) : empty ? (
-        <div className="dash-empty">No model usage recorded yet.</div>
+        <div className="dash-empty">{t('No model usage recorded yet.')}</div>
       ) : (
         <>
           <div className="stat-grid">
-            <StatCard icon={Activity} label="Total queries" value={usage.total_queries} />
-            <StatCard icon={CheckCircle2} label="Successful" value={usage.successful_queries} tone="is-good" />
-            <StatCard icon={XCircle} label="Failed" value={usage.failed_queries} tone={usage.failed_queries ? 'is-bad' : ''} />
-            <StatCard icon={CalendarDays} label="Today" value={usage.today} />
+            <StatCard icon={Activity} label={t('Total queries')} value={usage.total_queries} />
+            <StatCard icon={CheckCircle2} label={t('Successful')} value={usage.successful_queries} tone="is-good" />
+            <StatCard icon={XCircle} label={t('Failed')} value={usage.failed_queries} tone={usage.failed_queries ? 'is-bad' : ''} />
+            <StatCard icon={CalendarDays} label={t('Today')} value={usage.today} />
           </div>
           <div className="dash-columns">
             <div className="dash-card">
-              <h3>Model usage</h3>
+              <h3>{t('Model usage')}</h3>
               <BarList rows={modelRows} total={usage.total_queries} />
             </div>
             <div className="dash-card">
-              <h3>Routing distribution</h3>
+              <h3>{t('Routing distribution')}</h3>
               <BarList rows={routingRows} total={usage.total_queries} />
             </div>
           </div>
           <p className="dash-footnote">
-            Recorded since {new Date(usage.first_recorded).toLocaleString()} · includes chat, document Q&A and
-            summaries · failed = the model call did not complete.
+            {t('Recorded since {date} · includes chat, document Q&A and summaries · failed = the model call did not complete.',
+              { date: new Date(usage.first_recorded).toLocaleString(lang === 'hi' ? 'hi-IN' : undefined) })}
           </p>
         </>
       )}
@@ -128,6 +131,7 @@ function UsageSection() {
 }
 
 function StatusSection() {
+  const { t, lang } = useI18n();
   const [status, setStatus] = useState(null);
   const [checking, setChecking] = useState(true);
 
@@ -141,17 +145,17 @@ function StatusSection() {
 
   const unreachable = status?.error;
   const services = [
-    { key: 'backend', icon: Server, name: 'Django Backend' },
+    { key: 'backend', icon: Server, name: t('Django Backend') },
     { key: 'ollama', icon: Cpu, name: 'Ollama' },
-    { key: 'ocr', icon: ScanText, name: 'OCR Engine' },
-    { key: 'gpu', icon: Gauge, name: 'GPU & power' },
+    { key: 'ocr', icon: ScanText, name: t('OCR Engine') },
+    { key: 'gpu', icon: Gauge, name: t('GPU & power') },
   ];
 
   const serviceState = (key) => {
     if (checking) return { state: 'checking' };
     if (unreachable) return key === 'backend'
       ? { state: 'unavailable', label: 'Offline', reason: status.error }
-      : { state: 'unavailable', label: 'Unknown', reason: 'Cannot be checked while the backend is unreachable.' };
+      : { state: 'unavailable', label: 'Unknown', reason: t('Cannot be checked while the backend is unreachable.') };
     return status.services[key];
   };
 
@@ -159,27 +163,27 @@ function StatusSection() {
     <section className="dash-section" aria-labelledby="status-heading">
       <div className="dash-section-head">
         <div>
-          <h2 id="status-heading">System Status</h2>
-          <p>Lightweight checks only: no model is loaded and no inference is run.</p>
+          <h2 id="status-heading">{t('System Status')}</h2>
+          <p>{t('Lightweight checks only: no model is loaded and no inference is run.')}</p>
         </div>
         <button type="button" className="dash-btn" onClick={check} disabled={checking}>
-          <RefreshCw size={14} className={checking ? 'spin' : ''} /> Check Status
+          <RefreshCw size={14} className={checking ? 'spin' : ''} /> {t('Check Status')}
         </button>
       </div>
 
       <div className="dash-columns">
         <div className="dash-card">
-          <h3>Services</h3>
+          <h3>{t('Services')}</h3>
           <ul className="health-list">
             {services.map(({ key, icon: Icon, name }) => {
               const s = serviceState(key);
-              const detail = key === 'ollama' && s.version ? `Version ${s.version}`
+              const detail = key === 'ollama' && s.version ? t('Version {v}', { v: s.version })
                 : key === 'ocr' && s.detail ? s.detail
                   : key === 'gpu' && s.name ? [
                     s.name,
-                    s.memory_total_mb ? `${(s.memory_used_mb / 1024).toFixed(1)} / ${(s.memory_total_mb / 1024).toFixed(1)} GB used` : null,
+                    s.memory_total_mb ? t('{used} / {total} GB used', { used: (s.memory_used_mb / 1024).toFixed(1), total: (s.memory_total_mb / 1024).toFixed(1) }) : null,
                     s.temperature_c != null ? `${Math.round(s.temperature_c)} °C` : null,
-                    s.power_source === 'ac' ? 'on mains power' : s.power_source === 'battery' ? 'on battery' : null,
+                    s.power_source === 'ac' ? t('on mains power') : s.power_source === 'battery' ? t('on battery') : null,
                   ].filter(Boolean).join(' · ') : null;
               return (
                 <li key={key}>
@@ -197,7 +201,7 @@ function StatusSection() {
         </div>
 
         <div className="dash-card">
-          <h3>Model Health</h3>
+          <h3>{t('Model Health')}</h3>
           <ul className="health-list">
             {(status?.models || [{ id: 'qwen3' }, { id: 'qwen-coder' }, { id: 'qwen-vl' }]).map((m) => {
               const state = checking ? 'checking' : unreachable ? 'unavailable' : m.state;
@@ -210,11 +214,11 @@ function StatusSection() {
                   {!checking && !unreachable && (
                     <>
                       <div className="health-detail">
-                        {m.capability_label}
-                        {m.state === 'ready' && m.size_bytes ? ` · ${formatBytes(m.size_bytes)} on disk` : ''}
-                        {m.loaded ? ` · loaded in GPU memory (${formatBytes(m.vram_bytes)})` : ''}
+                        {t(m.capability_label)}
+                        {m.state === 'ready' && m.size_bytes ? ` · ${t('{size} on disk', { size: formatBytes(m.size_bytes) })}` : ''}
+                        {m.loaded ? ` · ${t('loaded in GPU memory ({size})', { size: formatBytes(m.vram_bytes) })}` : ''}
                       </div>
-                      <div className="health-detail">Last successful use: {timeAgo(m.last_success)}</div>
+                      <div className="health-detail">{t('Last successful use:')} {timeAgo(m.last_success, t, lang)}</div>
                       {m.state === 'unavailable' && m.reason && <div className="health-reason">{m.reason}</div>}
                     </>
                   )}
@@ -223,13 +227,12 @@ function StatusSection() {
             })}
           </ul>
           <p className="dash-footnote">
-            "Ready" means the model is installed in the local Ollama service. It does not measure answer quality.
-            Models load into the 8 GB GPU one at a time when first used.
+            {t('"Ready" means the model is installed in the local Ollama service. It does not measure answer quality. Models load into the 8 GB GPU one at a time when first used.')}
           </p>
         </div>
       </div>
       {status?.checked_at && !checking && (
-        <p className="dash-footnote">Checked {new Date(status.checked_at).toLocaleTimeString()}</p>
+        <p className="dash-footnote">{t('Checked {time}', { time: new Date(status.checked_at).toLocaleTimeString(lang === 'hi' ? 'hi-IN' : undefined) })}</p>
       )}
     </section>
   );

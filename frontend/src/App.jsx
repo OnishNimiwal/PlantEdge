@@ -12,6 +12,7 @@ import {
   renameConversation, deleteConversation, warmUp,
 } from './api/chatApi';
 import { modelLabel } from './utils/modelLabels';
+import { useI18n } from './utils/i18n';
 
 const CONVERSATION_KEY = 'mrpl.chat.conversationId';
 const THEME_KEY = 'mrpl.theme';
@@ -64,6 +65,7 @@ function ocrFootnote(result) {
 function fromServer(conv) {
   return conv.messages.map((m) => ({
     id: newId(),
+    serverId: m.id,
     role: m.role,
     text: m.content,
     images: m.images || [],
@@ -92,6 +94,7 @@ function fromResult(result) {
 }
 
 export default function App() {
+  const { t, lang, setLang } = useI18n();
   const [view, setView] = useState('chat'); // 'chat' | 'documents'
   const [sidebarOpen, setSidebarOpen] = useState(false);          // small screens: off-canvas
   const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed); // desktop
@@ -101,6 +104,7 @@ export default function App() {
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const [theme, setTheme] = useState(readTheme);
   const [docRequest, setDocRequest] = useState(null); // {documentId, conversationId, nonce}
@@ -112,9 +116,14 @@ export default function App() {
   const [think, setThink] = useState(false); // "Think deeper" (Qwen3 reasoning) for the next messages
   const composerRef = useRef(null);
 
-  const refreshConversations = useCallback(() => {
-    listConversations(searchRef.current).then(setConversations);
+  const applyPage = useCallback((page, append) => {
+    setConversations((prev) => (append ? [...prev, ...page.items.filter((c) => !prev.some((p) => p.id === c.id))] : page.items));
+    setHasMoreConversations(page.hasMore);
   }, []);
+
+  const refreshConversations = useCallback(() => {
+    listConversations(searchRef.current).then((page) => applyPage(page, false));
+  }, [applyPage]);
 
   // One toggle for both layouts: collapse/expand on desktop, open/close the drawer on small screens.
   const toggleSidebar = useCallback(() => {
@@ -145,8 +154,12 @@ export default function App() {
 
   const handleSearch = useCallback((q) => {
     searchRef.current = q;
-    listConversations(q).then(setConversations);
-  }, []);
+    listConversations(q).then((page) => applyPage(page, false));
+  }, [applyPage]);
+
+  const loadMoreConversations = useCallback(() => {
+    listConversations(searchRef.current, conversations.length).then((page) => applyPage(page, true));
+  }, [conversations.length, applyPage]);
 
   useEffect(() => {
     // 'system' follows the OS setting via prefers-color-scheme (see index.css).
@@ -190,7 +203,7 @@ export default function App() {
    * Stream one turn into the assistant message `msgId`. Text updates are batched
    * (~50 ms) so long answers do not re-render Markdown on every token.
    */
-  const streamTurn = async ({ text, images, regenerate }, msgId, previous) => {
+  const streamTurn = async ({ text, images, regenerate, editFrom, userLocalId }, msgId, previous) => {
     setBusy(true);
     let acc = '';
     let flushTimer = null;
@@ -199,7 +212,7 @@ export default function App() {
       replaceMessage(msgId, { status: 'streaming', text: acc });
     };
     const final = await streamMessage(
-      { message: text, model: selectedModel, images, conversationId, regenerate, think },
+      { message: text, model: selectedModel, images, conversationId, regenerate, think, editFrom, language: lang },
       (ev) => {
         if (ev.type === 'start') {
           if (ev.conversation_id && ev.conversation_id !== conversationId) {
@@ -214,7 +227,7 @@ export default function App() {
         } else if (ev.type === 'thinking') {
           replaceMessage(msgId, { loadingModel: false, thinking: true });
         } else if (ev.type === 'stage') {
-          replaceMessage(msgId, { loadingModel: false, stage: ev.label });
+          replaceMessage(msgId, { loadingModel: false, stage: ev.stage, stageLabel: ev.label });
         } else if (ev.type === 'delta') {
           acc += ev.text;
           if (!flushTimer) flushTimer = setTimeout(flush, 50);
@@ -228,7 +241,8 @@ export default function App() {
         setConversationId(final.conversation_id);
         storeConversation(final.conversation_id);
       }
-      replaceMessage(msgId, { ...fromResult(final), regenerateError: null });
+      replaceMessage(msgId, { ...fromResult(final), regenerateError: null, serverId: final.assistant_message_id });
+      if (userLocalId && final.user_message_id) replaceMessage(userLocalId, { serverId: final.user_message_id });
       refreshConversations();
     } else if (previous) {
       // Regenerate failed: the backend kept the previous answer, so restore it.
@@ -236,7 +250,7 @@ export default function App() {
     } else {
       replaceMessage(msgId, {
         status: 'error', text: acc,
-        error: final.error || 'The local AI service did not return a response.',
+        error: final.error || t('The local AI service did not return a response.'),
         retry: { text, images },
       });
     }
@@ -245,12 +259,42 @@ export default function App() {
   const handleSend = (text, images = []) => {
     if (!text.trim() || busy) return;
     const pendingId = newId();
+    const userId = newId();
     setMessages((prev) => [
       ...prev,
-      { id: newId(), role: 'user', text, images },
+      { id: userId, role: 'user', text, images },
       { id: pendingId, role: 'assistant', status: 'pending', startedAt: Date.now() },
     ]);
-    streamTurn({ text, images }, pendingId);
+    streamTurn({ text, images, userLocalId: userId }, pendingId);
+  };
+
+  /**
+   * Edit an earlier question (or regenerate an earlier answer): that turn and everything
+   * after it are replaced on the server once the new answer succeeds.
+   */
+  const handleEditFrom = (userMsg, newText, regenerate = false) => {
+    if (busy || !userMsg?.serverId || !conversationId) return;
+    const text = regenerate ? userMsg.text : newText.trim();
+    if (!text) return;
+    const index = messages.findIndex((m) => m.id === userMsg.id);
+    const pendingId = newId();
+    const userId = newId();
+    setMessages((prev) => [
+      ...prev.slice(0, index),
+      { id: userId, role: 'user', text, images: userMsg.images || [] },
+      { id: pendingId, role: 'assistant', status: 'pending', startedAt: Date.now() },
+    ]);
+    streamTurn({ text, images: [], editFrom: userMsg.serverId, regenerate, userLocalId: userId }, pendingId);
+  };
+
+  const handleRegenerateAny = (assistantMsg) => {
+    const index = messages.findIndex((m) => m.id === assistantMsg.id);
+    const userMsg = [...messages.slice(0, index)].reverse().find((m) => m.role === 'user');
+    const isLast = messages.slice(index + 1).every((m) => m.role !== 'assistant');
+    if (isLast) return handleRegenerate(assistantMsg);
+    if (!userMsg?.serverId) return;
+    if (!window.confirm(t('Regenerate this answer? The messages after it will be replaced.'))) return;
+    handleEditFrom(userMsg, '', true);
   };
 
   // A failed turn is not stored by the backend, so retrying just sends it again.
@@ -296,7 +340,7 @@ export default function App() {
   };
 
   const handleDelete = async (conv) => {
-    if (!window.confirm(`Delete "${conv.title || 'this conversation'}"? This also removes its images.`)) return;
+    if (!window.confirm(t('Delete "{title}"? This also removes its images.', { title: conv.title || t('this conversation') }))) return;
     if (await deleteConversation(conv.id)) {
       setConversations((prev) => prev.filter((c) => c.id !== conv.id));
       if (conv.id === conversationId) {
@@ -321,10 +365,10 @@ export default function App() {
   };
 
   const activeTitle = view === 'documents'
-    ? 'Document Assistant'
+    ? t('Document Assistant')
     : view === 'dashboard'
-      ? 'Dashboard'
-      : conversations.find((c) => c.id === conversationId)?.title || 'New chat';
+      ? t('System Status')
+      : conversations.find((c) => c.id === conversationId)?.title || t('New chat');
   const sidebarActiveId = view === 'documents' ? docRequest?.conversationId : conversationId;
 
   return (
@@ -342,8 +386,12 @@ export default function App() {
         collapsed={sidebarCollapsed}
         onClose={toggleSidebar}
         onSearch={handleSearch}
+        hasMore={hasMoreConversations}
+        onLoadMore={loadMoreConversations}
         theme={theme}
         onThemeChange={setTheme}
+        lang={lang}
+        onLangChange={setLang}
       />
       <div className="app-main">
         <Header
@@ -359,8 +407,10 @@ export default function App() {
               loadingConversation={loadingConversation}
               onSuggestion={handleSuggestion}
               onImageClick={setLightbox}
-              onRegenerate={handleRegenerate}
+              onRegenerate={handleRegenerateAny}
               onRetry={handleRetry}
+              onEdit={handleEditFrom}
+              busy={busy}
             />
             <div className="chat-composer-wrap">
               <MessageInput
@@ -380,13 +430,13 @@ export default function App() {
           </main>
         ) : view === 'dashboard' ? (
           <main className="docs-view">
-            <Suspense fallback={<div className="chat-loading">Loading dashboard…</div>}>
+            <Suspense fallback={<div className="chat-loading">{t('Loading…')}</div>}>
               <DashboardPage />
             </Suspense>
           </main>
         ) : (
           <main className="docs-view">
-            <Suspense fallback={<div className="chat-loading">Loading Document Assistant…</div>}>
+            <Suspense fallback={<div className="chat-loading">{t('Loading…')}</div>}>
               <DocumentsPage
                 onImageClick={setLightbox}
                 openRequest={docRequest}

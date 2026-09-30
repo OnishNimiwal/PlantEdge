@@ -874,3 +874,100 @@
   font-size: 0.74rem;
   color: var(--badge-amber-text);
 }
+
+/* ---- Edit a sent message ------------------------------------------------ */
+
+.msg-user-actions {
+  display: flex;
+  gap: 0.15rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.msg-user:hover .msg-user-actions,
+.msg-user:focus-within .msg-user-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .msg-user-actions { opacity: 1; }
+}
+
+.msg-edit {
+  width: min(620px, 100%);
+  min-width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+}
+
+.msg-edit textarea {
+  width: 100%;
+  resize: vertical;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.msg-edit:focus-within {
+  border-color: var(--border-focus);
+}
+
+.msg-edit-hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.msg-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.btn-ghost,
+.btn-primary {
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.btn-ghost:hover { background: var(--bg-subtle); }
+
+.btn-primary {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+.btn-primary:disabled {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-bg);
+  cursor: not-allowed;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

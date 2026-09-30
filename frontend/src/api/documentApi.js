@@ -101,11 +101,12 @@ export async function askDocument(id, question, conversationId) {
   }
 }
 
-export async function summarizeDocument(id) {
+export async function summarizeDocument(id, language = 'en') {
   try {
     const response = await fetch(`${API_BASE}/api/documents/${id}/summary/`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(language && language !== 'en' ? { language } : {}),
     });
 
     const data = await response.json();
@@ -181,9 +182,10 @@ export async function deleteDocument(id) {
 }
 
 /** Streamed document question (or regenerate of the last answer). */
-export async function streamDocumentQuestion(id, { question, conversationId, regenerate, think }, onEvent) {
+export async function streamDocumentQuestion(id, { question, conversationId, regenerate, think, language }, onEvent) {
   const body = {};
   if (think) body.think = true;
+  if (language && language !== 'en') body.language = language;
   if (question) body.question = question;
   if (conversationId) body.conversation_id = conversationId;
   if (regenerate) body.regenerate = true;

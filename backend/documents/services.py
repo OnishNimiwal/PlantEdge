@@ -88,7 +88,8 @@ class NothingToRegenerate(Exception):
     pass
 
 
-def prepare_document_question(document, question=None, conversation_id=None, regenerate=False, think=None) -> dict:
+def prepare_document_question(document, question=None, conversation_id=None, regenerate=False, think=None,
+                              language="en") -> dict:
     """
     Routing + prompt building for a document question (shared by the JSON and
     streaming endpoints). With regenerate=True the conversation's last question is
@@ -139,6 +140,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             f"The attached image(s) show {where} '{document.original_name}'. Only the attached pages "
             "are visible to you.",
             FORMAT_HINT,
+            reliability.language_instruction(language),
             "Text extracted from the document (may help read labels; may contain OCR errors):\n" + excerpt,
         )
         if overview:
@@ -159,6 +161,7 @@ def prepare_document_question(document, question=None, conversation_id=None, reg
             f"You are analyzing the document '{document.original_name}'. Answer the user's questions "
             "thoroughly and accurately from the document content below.",
             FORMAT_HINT,
+            reliability.language_instruction(language),
             _ocr_note(document),
             f"=== DOCUMENT CONTENT ===\n{doc_text}\n=== END DOCUMENT CONTENT ===",
         )
@@ -286,13 +289,14 @@ def finish_document_question(prepared, result) -> dict:
     }
 
 
-def ask_document_question(document, question=None, conversation_id=None, regenerate=False, think=None) -> dict:
+def ask_document_question(document, question=None, conversation_id=None, regenerate=False, think=None,
+                          language="en") -> dict:
     """
     Answer a question about a document using the routed local model, with the
     document's conversation history (backend-held, see chat/context.py).
     Returns {"answer", "model", "ollama_model", "routing", "context", "conversation_id", ...}.
     """
-    prepared = prepare_document_question(document, question, conversation_id, regenerate, think)
+    prepared = prepare_document_question(document, question, conversation_id, regenerate, think, language)
     try:
         if prepared["overview"]:
             result = run_overview(prepared)
@@ -304,7 +308,7 @@ def ask_document_question(document, question=None, conversation_id=None, regener
     return finish_document_question(prepared, result)
 
 
-def summarize_document(document) -> dict:
+def summarize_document(document, language="en") -> dict:
     """
     Structured summary with the general reasoning model (qwen3).
     Returns {"summary", "model", "ollama_model", "routing"}.
@@ -322,6 +326,7 @@ def summarize_document(document) -> dict:
         "3. Important Details & Conclusions\n"
         f"{FORMAT_HINT}\n"
         f"{_ocr_note(document)}\n"
+        f"{reliability.language_instruction(language)}\n"
         "=== DOCUMENT CONTENT ===\n"
         f"{doc_text}\n"
         "=== END DOCUMENT CONTENT ===\n\n"

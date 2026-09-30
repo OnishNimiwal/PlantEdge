@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { useI18n } from '../../utils/i18n';
 import DocumentUpload from './DocumentUpload';
 import DocumentList from './DocumentList';
 import DocumentViewer from './DocumentViewer';
@@ -8,6 +9,7 @@ import { getDocuments, getDocument, deleteDocument } from '../../api/documentApi
 const COMPACT_QUERY = '(max-width: 1280px)';
 
 export default function DocumentsPage({ onImageClick, openRequest, onConversationsChanged }) {
+  const { t } = useI18n();
   const [documents, setDocuments] = useState([]);
   const [selectedDocId, setSelectedDocId] = useState(null);
   const [selectedDoc, setSelectedDoc] = useState(null);
@@ -89,7 +91,7 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
 
   return (
     <div className={`documents-page ${panelOpen ? '' : 'panel-collapsed'}`}>
-      <aside className="documents-sidebar" aria-label="Documents" hidden={!panelOpen}>
+      <aside className="documents-sidebar" aria-label={t('Documents')} hidden={!panelOpen}>
         <DocumentUpload onUploadSuccess={handleUploadSuccess} />
         <DocumentList
           documents={documents}
@@ -105,8 +107,8 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
           type="button"
           className="icon-btn documents-panel-toggle"
           onClick={() => setPanelOpen((v) => !v)}
-          title={panelOpen ? 'Hide document list' : 'Show document list'}
-          aria-label={panelOpen ? 'Hide document list' : 'Show document list'}
+          title={panelOpen ? t('Hide document list') : t('Show document list')}
+          aria-label={panelOpen ? t('Hide document list') : t('Show document list')}
           aria-expanded={panelOpen}
         >
           {panelOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}

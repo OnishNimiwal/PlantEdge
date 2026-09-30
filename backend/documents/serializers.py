@@ -90,6 +90,7 @@ class DocumentAskSerializer(serializers.Serializer):
     conversation_id = serializers.UUIDField(required=False, allow_null=True)
     regenerate = serializers.BooleanField(required=False, default=False)
     think = serializers.BooleanField(required=False, allow_null=True, default=None)
+    language = serializers.ChoiceField(choices=["en", "hi"], required=False, default="en")
 
     def validate(self, attrs):
         if attrs.get("regenerate"):

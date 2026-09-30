@@ -1237,3 +1237,73 @@ class ContextImprovementsTests(APITestCase):
         mm.calibrate(m, 8000, {"prompt_eval_count": 500}, image_count=2)    # images distort: ignored
         self.assertAlmostEqual(mm.chars_per_token(m), 3.6)
         mm._ratio.pop(m.ollama_name, None)
+
+
+class EditLanguagePaginationTests(APITestCase):
+    def chat(self, body):
+        return self.client.post(reverse("chat"), body, format="json")
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_edit_earlier_message_replaces_later_turns(self, mock_post):
+        mock_post.return_value = ollama_ok("A1")
+        first = self.chat({"message": "Q1"})
+        conv = first.data["conversation_id"]
+        mock_post.return_value = ollama_ok("A2")
+        self.chat({"message": "Q2", "conversation_id": conv})
+        mock_post.return_value = ollama_ok("A1 edited")
+        r = self.chat({"message": "Q1 edited", "conversation_id": conv, "edit_from": first.data["user_message_id"]})
+        self.assertEqual(r.data["response"], "A1 edited")
+        self.assertEqual(mock_post.call_args.kwargs["json"]["messages"], [{"role": "user", "content": "Q1 edited"}])
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["Q1 edited", "A1 edited"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_regenerate_older_answer_keeps_images(self, mock_post):
+        mock_post.return_value = ollama_ok("red square")
+        first = self.chat({"message": "Describe this image.", "images": [PNG_B64]})
+        conv = first.data["conversation_id"]
+        mock_post.return_value = ollama_ok("later")
+        self.chat({"message": "Anything else?", "conversation_id": conv})
+        mock_post.return_value = ollama_ok("a small red square")
+        r = self.chat({"conversation_id": conv, "edit_from": first.data["user_message_id"], "regenerate": True})
+        self.assertEqual(r.data["ollama_model"], "qwen2.5vl:7b")
+        self.assertEqual(sent_user_message(mock_post)["images"], [PNG_B64])
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["Describe this image.", "a small red square"])
+
+    @patch("chat.model_manager.requests.Session.post")
+    def test_failed_edit_keeps_history(self, mock_post):
+        mock_post.return_value = ollama_ok("A1")
+        first = self.chat({"message": "Q1"})
+        conv = first.data["conversation_id"]
+        mock_post.side_effect = requests.exceptions.ConnectionError()
+        r = self.chat({"message": "Q1 edited", "conversation_id": conv, "edit_from": first.data["user_message_id"]})
+        self.assertEqual(r.status_code, 503)
+        msgs = self.client.get(reverse("conversation-detail", kwargs={"pk": conv})).data["conversation"]["messages"]
+        self.assertEqual([m["content"] for m in msgs], ["Q1", "A1"])
+        self.assertEqual(self.chat({"message": "x", "conversation_id": conv, "edit_from": 999999}).status_code, 400)
+
+    @override_settings(RELIABILITY_INSTRUCTIONS=True)
+    @patch("chat.model_manager.requests.Session.post")
+    def test_hindi_answer_language(self, mock_post):
+        mock_post.return_value = ollama_ok("ठीक है")
+        self.chat({"message": "federated learning kya hai?", "language": "hi"})
+        self.assertIn("Respond in Hindi", mock_post.call_args.kwargs["json"]["messages"][0]["content"])
+        self.chat({"message": "What is it?"})
+        self.assertNotIn("Respond in Hindi", mock_post.call_args.kwargs["json"]["messages"][0]["content"])
+
+    def test_hindi_routing_keywords(self):
+        self.assertEqual(route_model("पायथन में औसत निकालने का कोड लिखो")["reason"], "coding")
+        d = route_model("इस चित्र में क्या दिख रहा है?")
+        self.assertEqual((d["reason"], d["requires_image"]), ("vision", True))
+
+    def test_conversation_pagination(self):
+        from .models import Conversation, ChatMessage
+        for i in range(60):
+            c = Conversation.objects.create(title=f"c{i}")
+            ChatMessage.objects.create(conversation=c, role="user", content="x")
+        url = reverse("conversation-list")
+        first = self.client.get(url, {"limit": 25}).data
+        self.assertEqual((len(first["conversations"]), first["has_more"]), (25, True))
+        last = self.client.get(url, {"limit": 25, "offset": 50}).data
+        self.assertEqual((len(last["conversations"]), last["has_more"]), (10, False))

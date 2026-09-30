@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
+import { useI18n } from '../../utils/i18n';
 import { uploadDocument, getOCRConfig, getDocument } from '../../api/documentApi';
 
 const POLL_MS = 1500;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function DocumentUpload({ onUploadSuccess }) {
+  const { t } = useI18n();
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [error, setError] = useState(null);
@@ -28,13 +30,13 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const validateFile = (file) => {
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
     if (!allowedExtensions.includes(ext)) {
-      return `Invalid file type '${ext}'. Only PDF, TXT, PNG and JPG/JPEG files are supported.`;
+      return t("Invalid file type '{ext}'. Only PDF, TXT, PNG and JPG/JPEG files are supported.", { ext });
     }
     if (file.size === 0) {
-      return "The selected file is empty.";
+      return t('The selected file is empty.');
     }
     if (file.size > 15 * 1024 * 1024) {
-      return "File size exceeds 15MB limit.";
+      return t('File size exceeds 15MB limit.');
     }
     return null;
   };
@@ -66,16 +68,16 @@ export default function DocumentUpload({ onUploadSuccess }) {
         const ocrPages = doc?.ocr_pages || 0;
         setSuccessMsg(
           ocrPages
-            ? `"${file.name}" processed with local OCR (${ocrPages} page${ocrPages > 1 ? 's' : ''}).`
-            : `"${file.name}" uploaded and text extracted successfully!`
+            ? t('"{name}" processed with local OCR ({n} page(s)).', { name: file.name, n: ocrPages })
+            : t('"{name}" uploaded and text extracted successfully!', { name: file.name })
         );
         if (onUploadSuccess) onUploadSuccess(doc);
         setTimeout(() => setSuccessMsg(null), 4000);
       } else {
-        setError(doc?.processing_error || res?.error || 'Failed to process document on server.');
+        setError(doc?.processing_error || res?.error || t('Failed to process document on server.'));
       }
     } catch (err) {
-      setError(err.message || 'An error occurred during upload.');
+      setError(err.message || t('An error occurred during upload.'));
     } finally {
       setIsUploading(false);
       setPages(null);
@@ -127,33 +129,33 @@ export default function DocumentUpload({ onUploadSuccess }) {
 
         {isUploading ? (
           <div className="upload-state">
-            <ol className="upload-steps" aria-label="Processing status" aria-live="polite">
+            <ol className="upload-steps" aria-label={t('Processing status')} aria-live="polite">
               {progress < 1 ? (
                 <li className="is-active">
-                  <Loader2 size={14} className="spin-icon" /> Uploading {Math.round(progress * 100)}%
+                  <Loader2 size={14} className="spin-icon" /> {t('Uploading {pct}%', { pct: Math.round(progress * 100) })}
                 </li>
               ) : (
-                <li className="is-done"><CheckCircle2 size={14} /> Uploaded</li>
+                <li className="is-done"><CheckCircle2 size={14} /> {t('Uploaded')}</li>
               )}
               <li className={progress >= 1 ? 'is-active' : ''}>
                 {progress >= 1 ? <Loader2 size={14} className="spin-icon" /> : <span className="step-dot" />}
                 {pages?.total
-                  ? `Processing page ${Math.min(pages.done + 1, pages.total)} of ${pages.total}`
-                  : 'Processing: reading text, OCR for scanned pages'}
+                  ? t('Processing page {done} of {total}', { done: Math.min(pages.done + 1, pages.total), total: pages.total })
+                  : t('Processing: reading text, OCR for scanned pages')}
               </li>
-              <li><span className="step-dot" /> Ready</li>
+              <li><span className="step-dot" /> {t('Ready')}</li>
             </ol>
             <div
               className="upload-progress"
               role="progressbar"
-              aria-label="Upload progress"
+              aria-label={t('Upload progress')}
               aria-valuemin={0}
               aria-valuemax={100}
               aria-valuenow={Math.round(progress * 100)}
             >
               <span style={{ width: `${Math.round(progress * 100)}%` }} />
             </div>
-            <p className="upload-sub">Scanned pages take about 20 seconds each to process.</p>
+            <p className="upload-sub">{t('Scanned pages take about 10–20 seconds each to process.')}</p>
           </div>
         ) : (
           <div className="upload-state">
@@ -161,16 +163,16 @@ export default function DocumentUpload({ onUploadSuccess }) {
               <UploadCloud size={30} />
             </div>
             <p className="upload-title">
-              <strong>Click to upload</strong> or drag & drop file here
+              <strong>{t('Click to upload')}</strong> {t('or drag & drop file here')}
             </p>
-            <p className="upload-sub">PDF, TXT, PNG or JPG (Max 15MB) · scans are OCR'd locally</p>
+            <p className="upload-sub">{t("PDF, TXT, PNG or JPG (Max 15MB) · scans are OCR'd locally")}</p>
           </div>
         )}
       </div>
 
       {ocrLanguages.length > 1 && (
-        <label className="ocr-lang-row" title="Language of the text in scanned pages and images">
-          <span>OCR language</span>
+        <label className="ocr-lang-row" title={t('Language of the text in scanned pages and images')}>
+          <span>{t('OCR language')}</span>
           <select
             className="model-select"
             value={ocrLang}

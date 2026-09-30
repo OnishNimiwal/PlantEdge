@@ -45,6 +45,8 @@ CODING_STRONG = [
     r"\b(?:django|flask|fastapi|numpy|pandas|node\.?js|react\s+(?:component|app|hook|js)|reactjs)\b",
     r"\bcompile(?:r)? error\b|\bsyntax error\b|\bruntime error\b",
     r"\bunit tests?\b|\bpull request\b|\bgit (?:commit|merge|rebase)\b",
+    # Hindi (Devanagari): code / program / function / script / write code
+    r"(?:कोड|प्रोग्राम|फ़ंक्शन|फंक्शन|स्क्रिप्ट)\s*(?:लिखो|लिखें|लिखिए|बनाओ|बनाइए)",
     r"\b\w+\.(?:py|js|ts|jsx|tsx|java|cpp|c|h|sql|sh)\b",   # file names
     r"^\s*(?:def|class|import|from|#include|public|function)\s+\w+",  # code pasted inline
 ]
@@ -78,11 +80,13 @@ VISUAL_NOUNS = (
     r"(?:image|images|photo|photos|photograph|photographs|picture|pictures|pic|screenshot|"
     r"screenshots|scan|scans|scanned (?:\w+)|drawing|drawings|diagram|diagrams|p&ids?|"
     r"schematic|schematics|sketch|sketches|figure|blueprint|blueprints|handwritten (?:\w+)|"
-    r"handwriting|chart)"
+    r"handwriting|chart|चित्र|तस्वीर|फ़ोटो|फोटो|इमेज|ड्राइंग|आरेख)"
 )
 
 # A visual noun counts as a *target* only when it is pointed at.
 VISION_TARGET = [
+    # Hindi: "इस/इन/यह/ये ... चित्र/तस्वीर/फ़ोटो/इमेज/ड्राइंग" (no \b / \w: Devanagari vowel signs break them)
+    r"(?:इस|इन|यह|ये)\s+(?:\S+\s+){0,2}?(?:चित्र|तस्वीर|फ़ोटो|फोटो|इमेज|ड्राइंग|आरेख)",
     rf"\b(?:this|these|that|those|my|attached|uploaded|above|following|shown|provided|given)\s+"
     rf"(?:\w+\s+){{0,2}}{VISUAL_NOUNS}",
     rf"\b(?:in|on|from|of|at|inside)\s+the\s+(?:\w+\s+){{0,2}}{VISUAL_NOUNS}",

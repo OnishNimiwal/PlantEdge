@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Copy, Check } from 'lucide-react';
+import { useI18n } from '../utils/i18n';
 
 async function writeClipboard(text) {
   if (navigator.clipboard && window.isSecureContext) {
@@ -25,7 +26,10 @@ async function writeClipboard(text) {
  * "Copy" -> "Copied ✓" for ~2 s. `getText` is called on click so the latest
  * content (e.g. rendered text) is copied.
  */
-export default function CopyButton({ getText, label = 'Copy', className = '', iconOnly = false }) {
+export default function CopyButton({ getText, label, className = '', iconOnly = false }) {
+  const { t } = useI18n();
+  const text = label ?? t('Copy');
+  const done = t('Copied');
   const [copied, setCopied] = useState(false);
   const timer = useRef(null);
 
@@ -47,11 +51,11 @@ export default function CopyButton({ getText, label = 'Copy', className = '', ic
       type="button"
       className={`copy-action ${copied ? 'is-copied' : ''} ${className}`}
       onClick={handleClick}
-      title={copied ? 'Copied' : label}
-      aria-label={copied ? 'Copied' : label}
+      title={copied ? done : text || t('Copy')}
+      aria-label={copied ? done : text || t('Copy')}
     >
       {copied ? <Check size={14} /> : <Copy size={14} />}
-      {!iconOnly && <span>{copied ? 'Copied ✓' : label}</span>}
+      {!iconOnly && text && <span>{copied ? `${done} ✓` : text}</span>}
     </button>
   );
 }

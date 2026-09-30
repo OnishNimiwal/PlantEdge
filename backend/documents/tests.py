@@ -419,6 +419,15 @@ class DocumentOCRTests(APITestCase):
         self.assertEqual({k: v for k, v in response.data["routing"].items() if k != "explanation"}, {"mode": "fixed", "reason": "general_reasoning"})
         self.assertEqual(mock_post.call_args.kwargs["json"]["model"], "qwen3:8b")
 
+    @patch("chat.model_manager.requests.Session.post", return_value=ok_response("1. सारांश"))
+    def test_summary_language_hindi(self, mock_post):
+        doc = Document.objects.create(original_name="s.pdf", file_type="PDF", extracted_text="Findings...")
+        url = reverse("document-summary", kwargs={"pk": doc.id})
+        self.client.post(url, {"language": "hi"}, format="json")
+        self.assertIn("Respond in Hindi", str(mock_post.call_args.kwargs["json"]))
+        self.client.post(url, {"language": "fr"}, format="json")  # unsupported -> English (no instruction)
+        self.assertNotIn("Respond in Hindi", str(mock_post.call_args.kwargs["json"]))
+
     def test_ocr_module_has_no_model_execution_logic(self):
         import inspect
         from . import ocr

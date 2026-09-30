@@ -171,3 +171,11 @@ _EXECUTION_CLAIM = re.compile(
 def execution_claims(text: str) -> bool:
     """True if a coding answer claims the code was run/tested (the workbench never executes code)."""
     return bool(_EXECUTION_CLAIM.search(text or ""))
+
+
+def language_instruction(language):
+    """Answer language chosen in the UI. Code, identifiers, units and quoted document text stay as they are."""
+    if language == "hi":
+        return ("Respond in Hindi (Devanagari script) unless the user explicitly asks for another language. "
+                "Keep code, commands, technical identifiers, units and quoted document text unchanged.")
+    return ""

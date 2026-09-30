@@ -75,6 +75,25 @@ def last_turn(conv):
     }
 
 
+def turn_from(conv, message_id):
+    """
+    Editing / regenerating an earlier turn: the user message `message_id` and everything
+    after it. Returns {"ids", "message", "images", "image_info", "extra_context"} or None.
+    """
+    first = conv.messages.filter(id=message_id, role=ChatMessage.ROLE_USER).prefetch_related("attachments").first()
+    if first is None:
+        return None
+    atts = list(first.attachments.all())
+    return {
+        "ids": list(conv.messages.filter(id__gte=first.id).values_list("id", flat=True)),
+        "message": first.content,
+        "images": [_attachment_b64(a) for a in atts],
+        "image_info": [{"width": a.width, "height": a.height,
+                        "format": "JPEG" if a.file.name.lower().endswith(".jpg") else "PNG"} for a in atts],
+        "extra_context": first.extra_context,
+    }
+
+
 def discard(message_ids):
     """Delete messages (e.g. the turn being regenerated) and their image files."""
     ChatMessage.objects.filter(id__in=message_ids).delete()
@@ -211,7 +230,7 @@ def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images
         ext = "jpg" if meta.get("format") == "JPEG" else "png"
         att = ChatAttachment(message=user_msg, width=meta.get("width", 0), height=meta.get("height", 0))
         att.file.save(f"{uuid.uuid4().hex}.{ext}", ContentFile(base64.b64decode(b64)), save=True)
-    ChatMessage.objects.create(
+    assistant_msg = ChatMessage.objects.create(
         conversation=conv, role=ChatMessage.ROLE_ASSISTANT, content=assistant_text,
         model=model_tag or "", routing_reason=reason or "",
         basis=(basis or {}).get("type", ""), basis_detail=(basis or {}).get("detail", ""),
@@ -221,6 +240,7 @@ def record_turn(conv, user_text, assistant_text, model_tag="", reason="", images
     if not conv.title:
         conv.title = user_text.strip().splitlines()[0][:80] if user_text.strip() else "Conversation"
     conv.save()  # bumps updated_at
+    return user_msg, assistant_msg
 
 
 def _basis_out(m):
@@ -240,6 +260,7 @@ def serialize(conv) -> dict:
         "updated_at": conv.updated_at,
         "messages": [
             {
+                "id": m.id,
                 "role": m.role,
                 "content": m.content,
                 "model": m.model or None,

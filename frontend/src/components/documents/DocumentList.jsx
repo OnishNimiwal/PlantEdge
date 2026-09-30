@@ -1,5 +1,6 @@
 import React from 'react';
 import { FileText, Trash2, Calendar, FileCode, Check } from 'lucide-react';
+import { useI18n } from '../../utils/i18n';
 
 export default function DocumentList({
   documents,
@@ -8,10 +9,11 @@ export default function DocumentList({
   onDeleteDoc,
   loading,
 }) {
+  const { t, lang } = useI18n();
   const formatDate = (dateStr) => {
     try {
       const d = new Date(dateStr);
-      return d.toLocaleDateString([], {
+      return d.toLocaleDateString(lang === 'hi' ? 'hi-IN' : [], {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
@@ -23,15 +25,15 @@ export default function DocumentList({
   };
 
   if (loading && documents.length === 0) {
-    return <div className="doc-list-loading">Loading documents...</div>;
+    return <div className="doc-list-loading">{t('Loading documents…')}</div>;
   }
 
   if (documents.length === 0) {
     return (
       <div className="doc-list-empty">
         <FileText size={36} className="empty-docs-icon" />
-        <p>No documents uploaded yet.</p>
-        <span>Upload a PDF or TXT file above to begin.</span>
+        <p>{t('No documents uploaded yet.')}</p>
+        <span>{t('Upload a PDF, TXT or image file above to begin.')}</span>
       </div>
     );
   }
@@ -39,7 +41,7 @@ export default function DocumentList({
   return (
     <div className="document-list">
       <div className="doc-list-header">
-        <h3>Uploaded Documents ({documents.length})</h3>
+        <h3>{t('Uploaded Documents ({n})', { n: documents.length })}</h3>
       </div>
       <div className="doc-items-container">
         {documents.map((doc) => {
@@ -67,12 +69,12 @@ export default function DocumentList({
                     </span>
                     {doc.status && doc.status !== 'ready' ? (
                       <span className={`status-chip is-${doc.status}`}>
-                        {doc.status === 'failed' ? 'Failed' : 'Processing…'}
+                        {doc.status === 'failed' ? t('Failed') : t('Processing…')}
                       </span>
                     ) : (
                       <span className="doc-meta-item">
                         <FileCode size={12} />
-                        {(doc.text_length || 0).toLocaleString()} chars
+                        {t('{n} chars', { n: (doc.text_length || 0).toLocaleString() })}
                       </span>
                     )}
                   </div>
@@ -84,12 +86,12 @@ export default function DocumentList({
                   className="doc-delete-btn"
                   onClick={(e) => {
                     e.stopPropagation();
-                    if (window.confirm(`Delete document "${doc.original_name}"?`)) {
+                    if (window.confirm(t('Delete document "{name}"?', { name: doc.original_name }))) {
                       onDeleteDoc(doc.id);
                     }
                   }}
-                  title="Delete document"
-                  aria-label="Delete document"
+                  title={t('Delete document')}
+                  aria-label={t('Delete document')}
                 >
                   <Trash2 size={15} />
                 </button>

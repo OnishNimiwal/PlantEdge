@@ -93,17 +93,20 @@ export async function getLatestDocumentConversation(documentId) {
   }
 }
 
-/** Recent conversations incl. Document Q&A (newest first, up to 50); `q` searches titles + messages. */
-export async function listConversations(q = '') {
+/**
+ * Conversations incl. Document Q&A (newest first, 50 per page); `q` searches titles + messages.
+ * Returns {items, hasMore}.
+ */
+export async function listConversations(q = '', offset = 0) {
   try {
-    const params = new URLSearchParams({ scope: 'all' });
+    const params = new URLSearchParams({ scope: 'all', offset: String(offset), limit: '50' });
     if (q.trim()) params.set('q', q.trim());
     const response = await fetch(`${API_BASE}/api/chat/conversations/?${params}`);
-    if (!response.ok) return [];
+    if (!response.ok) return { items: [], hasMore: false };
     const data = await response.json();
-    return data.conversations || [];
+    return { items: data.conversations || [], hasMore: Boolean(data.has_more) };
   } catch {
-    return [];
+    return { items: [], hasMore: false };
   }
 }
 
@@ -214,9 +217,11 @@ export async function postStream(url, body, onEvent) {
 }
 
 /** Streamed chat turn (same body as sendMessage; regenerate supported). */
-export function streamMessage({ message, model, images, conversationId, regenerate, think }, onEvent) {
+export function streamMessage({ message, model, images, conversationId, regenerate, think, editFrom, language }, onEvent) {
   const body = {};
   if (think) body.think = true;
+  if (editFrom) body.edit_from = editFrom;
+  if (language && language !== 'en') body.language = language;
   if (message) body.message = message;
   if (model) body.model = model;
   if (images && images.length) body.images = images;

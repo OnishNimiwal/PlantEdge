@@ -159,7 +159,7 @@ class DocumentAskView(APIView):
         try:
             result = ask_document_question(
                 doc, v.get("question"), conversation_id=v.get("conversation_id"), regenerate=v["regenerate"],
-                think=v.get("think"),
+                think=v.get("think"), language=v.get("language", "en"),
             )
             return Response({"success": True, **result, "external_api": False})
         except NothingToRegenerate:
@@ -188,7 +188,7 @@ class DocumentAskStreamView(APIView):
         v = serializer.validated_data
         try:
             prepared = prepare_document_question(doc, v.get("question"), v.get("conversation_id"), v["regenerate"],
-                                                 v.get("think"))
+                                                 v.get("think"), v.get("language", "en"))
         except NothingToRegenerate:
             return Response({"success": False, "error": "There is no answer to regenerate."},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -216,7 +216,8 @@ class DocumentSummaryView(APIView):
             return blocked
 
         try:
-            result = summarize_document(doc)
+            language = request.data.get("language") if isinstance(request.data, dict) else None
+            result = summarize_document(doc, language if language in ("en", "hi") else "en")
             return Response({"success": True, **result, "external_api": False})
         except OllamaServiceError as exc:
             return Response(

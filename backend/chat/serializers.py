@@ -19,6 +19,10 @@ class ChatSerializer(serializers.Serializer):
     regenerate = serializers.BooleanField(required=False, default=False)
     # "Think deeper": enable Qwen3 step-by-step reasoning for this message (slower).
     think = serializers.BooleanField(required=False, allow_null=True, default=None)
+    # Edit / regenerate an earlier turn: replace this user message and everything after it.
+    edit_from = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    # Answer language chosen in the UI ("en" | "hi").
+    language = serializers.ChoiceField(choices=["en", "hi"], required=False, default="en")
     # "auto" (default when omitted) -> router picks; a registry id -> manual choice.
     model = serializers.CharField(required=False, allow_blank=False, default=AUTO_MODEL)
     # Conversation to continue (omitted/unknown -> a new conversation is started).
@@ -62,9 +66,11 @@ class ChatSerializer(serializers.Serializer):
         return cleaned
 
     def validate(self, attrs):
-        if attrs.get("regenerate"):
+        if attrs.get("regenerate") or attrs.get("edit_from"):
             if not attrs.get("conversation_id"):
-                raise serializers.ValidationError({"conversation_id": ["Required to regenerate."]})
+                raise serializers.ValidationError({"conversation_id": ["Required to regenerate or edit."]})
+            if attrs.get("edit_from") and not attrs.get("regenerate") and not attrs.get("message"):
+                raise serializers.ValidationError({"message": ["This field is required."]})
         elif not attrs.get("message"):
             raise serializers.ValidationError({"message": ["This field is required."]})
         model = attrs["model"]
