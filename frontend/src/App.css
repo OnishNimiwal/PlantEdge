@@ -825,3 +825,50 @@
 .doc-processing svg {
   color: var(--accent-primary);
 }
+
+/* ===== Knowledge base + data classification ===== */
+
+.class-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.class-chip.is-public { background: var(--badge-blue-bg); color: var(--badge-blue-text); border-color: var(--badge-blue-border); }
+.class-chip.is-shareable { background: var(--badge-green-bg); color: var(--badge-green-text); border-color: var(--badge-green-border); }
+.class-chip.is-confidential { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-border); }
+.class-chip-auto { font-weight: 500; opacity: 0.85; }
+
+.class-select {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.4rem;
+  max-width: 9rem;
+}
+
+.knowledge-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  margin: 0.9rem 0 0.4rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+.knowledge-entry:hover { background: var(--bg-subtle); }
+.knowledge-entry.selected { border-color: var(--accent-primary); background: var(--accent-light); }
+.knowledge-entry:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.knowledge-entry span { display: flex; flex-direction: column; line-height: 1.25; }
+.knowledge-entry strong { font-size: 0.85rem; }
+.knowledge-entry small { font-size: 0.72rem; color: var(--text-muted); }

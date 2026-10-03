@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, Library } from 'lucide-react';
 import { useI18n } from '../../utils/i18n';
 import DocumentUpload from './DocumentUpload';
 import DocumentList from './DocumentList';
 import DocumentViewer from './DocumentViewer';
+import KnowledgePanel from './KnowledgePanel';
 import { getDocuments, getDocument, deleteDocument } from '../../api/documentApi';
 
 const COMPACT_QUERY = '(max-width: 1280px)';
@@ -17,8 +18,11 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
   const [requestedConversation, setRequestedConversation] = useState(null);
   // The document list collapses on medium screens once a document is open.
   const [panelOpen, setPanelOpen] = useState(true);
+  // 'document' = the selected document; 'knowledge' = Q&A across all indexed documents.
+  const [view, setView] = useState('document');
 
   const handleSelectDoc = useCallback(async (id, conversationId = null) => {
+    setView('document');
     setSelectedDocId(id);
     setRequestedConversation(conversationId);
     try {
@@ -67,6 +71,7 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
   }, [openRequest, handleSelectDoc]);
 
   const handleUploadSuccess = (newDoc) => {
+    setView('document');
     setDocuments((prev) => [newDoc, ...prev]);
     setSelectedDocId(newDoc.id);
     setSelectedDoc(newDoc);
@@ -93,9 +98,24 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
     <div className={`documents-page ${panelOpen ? '' : 'panel-collapsed'}`}>
       <aside className="documents-sidebar" aria-label={t('Documents')} hidden={!panelOpen}>
         <DocumentUpload onUploadSuccess={handleUploadSuccess} />
+        <button
+          type="button"
+          className={`knowledge-entry ${view === 'knowledge' ? 'selected' : ''}`}
+          onClick={() => {
+            setView('knowledge');
+            if (window.matchMedia?.(COMPACT_QUERY).matches) setPanelOpen(false);
+          }}
+          aria-pressed={view === 'knowledge'}
+        >
+          <Library size={17} aria-hidden="true" />
+          <span>
+            <strong>{t('Knowledge base')}</strong>
+            <small>{t('Ask across all documents')}</small>
+          </span>
+        </button>
         <DocumentList
           documents={documents}
-          selectedDocId={selectedDocId}
+          selectedDocId={view === 'document' ? selectedDocId : null}
           onSelectDoc={(id) => handleSelectDoc(id)}
           onDeleteDoc={handleDeleteDoc}
           loading={loading}
@@ -113,14 +133,26 @@ export default function DocumentsPage({ onImageClick, openRequest, onConversatio
         >
           {panelOpen ? <PanelLeftClose size={17} /> : <PanelLeftOpen size={17} />}
         </button>
-        <DocumentViewer
-          key={`${selectedDoc?.id}-${requestedConversation || ''}`}
-          document={selectedDoc}
-          onDelete={handleDeleteDoc}
-          onImageClick={onImageClick}
-          conversationId={requestedConversation}
-          onConversationsChanged={onConversationsChanged}
-        />
+        {view === 'knowledge' ? (
+          <KnowledgePanel
+            onImageClick={onImageClick}
+            onConversationsChanged={onConversationsChanged}
+            refreshKey={documents.length}
+          />
+        ) : (
+          <DocumentViewer
+            key={`${selectedDoc?.id}-${requestedConversation || ''}`}
+            document={selectedDoc}
+            onDelete={handleDeleteDoc}
+            onImageClick={onImageClick}
+            conversationId={requestedConversation}
+            onConversationsChanged={onConversationsChanged}
+            onDocumentChanged={(doc) => {
+              setSelectedDoc(doc);
+              setDocuments((prev) => prev.map((d) => (d.id === doc.id ? { ...d, ...doc } : d)));
+            }}
+          />
+        )}
       </section>
     </div>
   );

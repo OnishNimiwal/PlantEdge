@@ -1,6 +1,7 @@
 import React from 'react';
 import { FileText, Trash2, Calendar, FileCode, Check } from 'lucide-react';
 import { useI18n } from '../../utils/i18n';
+import ClassificationChip from './ClassificationChip';
 
 export default function DocumentList({
   documents,
@@ -67,6 +68,7 @@ export default function DocumentList({
                       <Calendar size={12} />
                       {formatDate(doc.uploaded_at)}
                     </span>
+                    <ClassificationChip level={doc.classification} source={doc.classification_source} compact />
                     {doc.status && doc.status !== 'ready' ? (
                       <span className={`status-chip is-${doc.status}`}>
                         {doc.status === 'failed' ? t('Failed') : t('Processing…')}

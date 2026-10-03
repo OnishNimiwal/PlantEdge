@@ -11,13 +11,15 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
 | **Backend** | Django 6.1 + Django REST Framework 3.18 (Python 3.12) |
 | **Inference** | Ollama 0.33 serving three local models: `qwen3:8b`, `qwen2.5-coder:7b`, `qwen2.5vl:7b` |
 | **OCR** | PaddleOCR 3.7 (PaddlePaddle 3.3, CPU) for scanned PDFs and images |
-| **Storage** | SQLite (metadata, conversations, usage records) + local `media/` folder (uploads) |
+| **Storage** | SQLite (metadata, conversations, usage records) + local `media/` folder (uploads) + **Qdrant Edge** knowledge store (`knowledge_store/`, embedded, no server) |
+| **Embeddings** | `qwen3-embedding:0.6b` via the same local Ollama, on the CPU by default |
 | **Target hardware** | One workstation/server with an 8 GB NVIDIA GPU, 16 GB RAM, serving LAN clients |
-| **Tests** | 188 automated backend tests + a 12-step headless-browser smoke test (`tools/ui_smoke.py`) |
+| **Tests** | 264 automated backend tests + a 12-step headless-browser smoke test (`tools/ui_smoke.py`) |
 
 > **Status:** working prototype, tested end to end on the development machine. Authentication and
 > production deployment hardening are **not implemented yet** (out of scope for now); long
-> documents use keyword (BM25) section retrieval, not a vector database — see
+> documents use semantic retrieval from a local Qdrant Edge store (local embeddings), with
+> in-memory BM25 as fallback; there is no cloud knowledge source or sync yet — see
 > [Limitations & roadmap](#20-limitations--roadmap).
 
 ---
@@ -87,13 +89,36 @@ no prompt, document or image is ever sent to an external or cloud AI service.**
   UI says so.
 - Ask questions (with conversation history, streaming, regenerate), generate an executive
   summary, export a Word (`.docx`) report.
-- **Long documents:** the sections most relevant to the question are selected (BM25), labelled
+- **Long documents:** the sections most relevant to the question are selected (semantic search in
+  the local Qdrant Edge store; BM25 when a document is not indexed), labelled
   with their page, and the answer cites pages as `[p. N]`; citations and numbers are checked
   against the document automatically.
 - Visual questions about a PDF ("what does the drawing on page 3 show?") send the named pages
   (max 2) to the vision model; "describe every page" analyses the PDF in batches of 2 pages (up
   to 6 pages).
 - Limits (characters, pages, OCR pages) are configurable and reported in the UI.
+
+### Knowledge base (all documents)
+- **Ask across every indexed document** (*Knowledge base* entry above the document list). The most
+  relevant sections of all documents are found by meaning in the local Qdrant Edge store, labelled
+  `[S1]`, `[S2]` … with document, page, heading and classification, and the answer cites them.
+- Checks under each answer: values not found in the sources, cited labels that were not given,
+  answers that cite nothing, **a statement cited to one source that another source matches clearly
+  better** (word-overlap heuristic), and a notice when a **confidential** source was used. The
+  footnotes list the cited sources. Conversations are kept (follow-ups like "which motor?" are
+  searched together with the previous question).
+
+### Data classification & confidentiality
+- Every document is **Public, Shareable, Internal or Confidential**. Only Public and Shareable
+  content may ever leave the site; **unclassified uploads are Internal** (stay on site).
+- Chosen at upload; an automatic **content scan** (confidentiality markings, email / phone /
+  Aadhaar / PAN, passwords, keys, internal IP addresses) can only **raise** the level. Lowering
+  needs a reason; lowering below what the scan found is **refused** (unless
+  `CLASSIFICATION_ALLOW_OVERRIDE`). The scan stores what it found and how often — never the values.
+- **Egress guard** (`knowledge/policy.py`): the single choke point for anything leaving the site
+  (future cloud sync). Per section it requires the database level (not the index payload), a fresh
+  content scan and an index matching the current text; released items carry only whitelisted
+  fields. *Egress review* shows what could leave now. Every decision is in an **audit trail**.
 
 ### Dashboard
 - **Usage dashboard** — total/successful/failed/today's queries, **14-day trend**, per-model table
@@ -195,7 +220,7 @@ flowchart TB
     REL["chat/reliability.py<br/>Reliability instructions + answer basis"]
     PROC["documents/processing.py<br/>Document processor"]
     JOBS["documents/jobs.py<br/>Background extraction worker"]
-    RET["documents/retrieval.py + verify.py<br/>BM25 sections, number/citation checks"]
+    RET["documents/retrieval.py + verify.py<br/>sections, rankers, number/citation checks"]
     OCR["documents/ocr.py<br/>PaddleOCR (CPU)"]
     EXT["documents/extractors.py<br/>PyMuPDF text layer / TXT"]
     MM["chat/model_manager.py<br/>Execution layer (only code that calls Ollama)"]
@@ -233,7 +258,8 @@ flowchart TB
 | `documents/ocr.py` | Images/PDF pages → text (PaddleOCR on CPU) | Any model/Ollama logic |
 | `documents/processing.py` | OCR for chat images, PDF page rendering, page selection, overview batches | Model selection |
 | `documents/jobs.py` | One background worker thread: extraction/OCR after upload, progress, interrupted-job recovery | Model selection |
-| `documents/retrieval.py`, `verify.py` | Page-labelled sections, BM25 ranking; deterministic number and citation checks | Model calls |
+| `documents/retrieval.py`, `verify.py` | Page-labelled sections, ranker seam (BM25 default); deterministic number and citation checks | Model calls |
+| `knowledge/` | Local embeddings (Ollama `/api/embed`), Qdrant Edge store, indexing, semantic ranker, search API | Chat/answer generation |
 | `monitoring/*` | Usage aggregation, health checks | Inference, model loading |
 
 ### 3.3 Chat request flow (streaming)
@@ -293,7 +319,7 @@ flowchart TD
     TXT & OCRI & TL & OCRP & VT --> JOIN["Combine (page markers, page offsets)<br/>tables/columns rebuilt · confidence · limits"]
     JOIN --> STORE[("Document row + file in media/")]
     STORE --> Q["Question"] --> RQ["Router (image available = PDF/image doc)"]
-    RQ -- "text question" --> TXTQ["qwen3 · whole text, or BM25 sections labelled [p. N]<br/>+ document reliability mode → number/citation checks"]
+    RQ -- "text question" --> TXTQ["qwen3 · whole text, or best sections (Qdrant Edge / BM25) labelled [p. N]<br/>+ document reliability mode → number/citation checks"]
     RQ -- "visual question" --> VIS["qwen2.5vl · named pages rendered ≤1024 px (max 2)<br/>+ vision reliability mode"]
     RQ -- "coding question" --> COD["qwen2.5-coder · document text"]
 ```
@@ -419,7 +445,7 @@ tokens (`index.css`) and a dark theme; all assets are bundled locally.
 
 | Tool | Use |
 |---|---|
-| Django test runner | 188 backend tests (Ollama and OCR mocked where appropriate); `tools/ui_smoke.py` for the live UI |
+| Django test runner | 264 backend tests (Ollama and OCR mocked where appropriate); `tools/ui_smoke.py` for the live UI |
 | Headless Google Chrome + Chrome DevTools Protocol | Live end-to-end UI verification (streaming, copy, images, sidebar, dashboard, console errors) |
 | axe-core 4 | Automated accessibility audit (WCAG 2.x rules) in light and dark themes |
 | `samples/ocr_benchmark.py` | OCR accuracy/speed/memory benchmark on generated test scans |
@@ -560,6 +586,7 @@ Clients are ordinary PCs on the LAN. **No model or OCR runs on the client.**
 ollama pull qwen3:8b
 ollama pull qwen2.5-coder:7b
 ollama pull qwen2.5vl:7b
+ollama pull qwen3-embedding:0.6b    # local embeddings for the knowledge store (CPU, ~640 MB)
 ollama list
 ```
 
@@ -573,7 +600,9 @@ cp .env.example .env                             # then edit values (see §9)
 cd backend
 ../env/bin/python manage.py migrate
 ../env/bin/python manage.py check                # warns about legacy/unsafe settings
-../env/bin/python manage.py check_local_models   # verifies the three models are installed
+../env/bin/python manage.py check_local_models   # verifies the three models + the embedding model
+../env/bin/python manage.py scan_documents       # only for documents uploaded before classification existed
+../env/bin/python manage.py index_documents      # only for documents uploaded before the knowledge store existed
 ../env/bin/python manage.py runserver 0.0.0.0:8000
 ```
 
@@ -665,6 +694,21 @@ See `.env.example` for a ready template.
 | `OCR_USE_TEXTLINE_ORIENTATION` | `false` | Text-line orientation (did not help in tests) |
 | `OCR_USE_UNWARPING` | `false` | Document unwarping for photographed curved pages (not evaluated) |
 | `OCR_CPU_THREADS` | `8` | CPU threads for OCR |
+
+### Local knowledge store
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `KNOWLEDGE_INDEXING` | `true` | Embed document sections into Qdrant Edge after extraction (`false` = BM25 only). Off during `manage.py test` |
+| `KNOWLEDGE_STORE_DIR` | `backend/knowledge_store` | Qdrant Edge shard directory (one process at a time) |
+| `EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Local Ollama embedding model (`ollama pull qwen3-embedding:0.6b`). Changing it needs `index_documents --rebuild` |
+| `EMBEDDING_DEVICE` | `cpu` | `cpu` keeps the chat model in GPU memory; `gpu` is faster but shares the GPU queue |
+| `EMBEDDING_BATCH_SIZE` / `EMBEDDING_TIMEOUT` / `EMBEDDING_KEEP_ALIVE` | `16` / `120` / `30m` | Sections per request, seconds, how long the model stays loaded |
+| `EMBEDDING_QUERY_INSTRUCTION` | *(plant-documents instruction)* | Prefix for search queries (instruction-aware models); empty = none |
+| `KNOWLEDGE_IDENTIFIER_BOOST` | `0.2` | Added to the semantic score of sections that contain the question's identifiers |
+| `KNOWLEDGE_QA_MAX_SOURCES` | `8` | Sections given to the model for a knowledge-base question (within the context budget) |
+| `DEFAULT_CLASSIFICATION` | `internal` | Level of uploads nobody classified (`public` / `shareable` / `internal` / `confidential`) |
+| `CLASSIFICATION_ALLOW_OVERRIDE` | `false` | Allow lowering a document below the level its content scan requires (audited) |
 
 ### Monitoring
 
@@ -832,7 +876,7 @@ the default model and limits (`max_images_per_message`, `vision_max_side`).
 | `GET /api/documents/` | List documents |
 | `POST /api/documents/upload/` | Multipart: `file` (PDF/TXT/PNG/JPG ≤15 MB), optional `ocr_lang`. **202** with the document (`status: queued`); poll `GET /api/documents/<id>/` for `status` (`queued`/`processing`/`ready`/`failed`), `progress_done`/`progress_total`, then `extraction_method`, `ocr_pages`, `ocr_confidence`, `page_count`, `ocr_pages_skipped`, `truncated`, `complex_layout`, `vision_fallback_pages`, `processing_error`, `limits`. (201 with the finished document when `DOCUMENT_ASYNC_PROCESSING=false`.) Q&A/summary on a document that is not ready → **409** |
 | `GET /api/documents/ocr-config/` | Allowed OCR languages and default |
-| `GET /api/documents/<id>/` | Document detail incl. extracted text |
+| `GET /api/documents/<id>/` | Document detail incl. extracted text and knowledge index state: `index_status` (`""`/`pending`/`indexed`/`failed`), `index_chunks`, `index_error`, `indexed_at` |
 | `DELETE /api/documents/<id>/` | Delete document, file and its Q&A conversations |
 | `POST /api/documents/<id>/ask/` | `{"question": "…", "conversation_id": "…", "regenerate": false, "think": false, "language": "en"}` → `answer`, `model`, `ollama_model`, `routing`, `context` (incl. `retrieval`, `sections_used`, `pages`), `basis` (incl. `warnings`), `vision_pages`, `pages_not_covered`, `page_count`, `conversation_id`, `user_message_id`, `assistant_message_id` |
 | `POST /api/documents/<id>/ask/stream/` | Streaming variant (same NDJSON events; `stage` events per page batch for "describe every page"; `done` carries `answer`) |
@@ -845,6 +889,14 @@ the default model and limits (`max_images_per_message`, `vision_max_side`).
 |---|---|
 | `GET /api/dashboard/usage/?tz_offset=<minutes>` | `total_queries`, `successful_queries`, `failed_queries`, `today` (viewer's local day; `tz_offset` = browser `getTimezoneOffset()`), `models` {tag: count}, `model_details` (per model: `queries`, `failed`, `avg_ms`, `regenerated`, `feedback` {up, down}, `last_success`), `routing` {general, coding, vision}, `sources`, `trend` (14 × {date, total, failed, avg_ms}), `regenerated`, `backfilled`, `pre_model_failures` {ocr, extraction}, `feedback`, `first_recorded` |
 | `GET /api/dashboard/status/` | `services.backend/ollama/ocr/gpu/database/disk` with `state` (`ready`/`degraded`/`unavailable`), `label`, `reason`, `warnings`; `models[]` with `state`, `capability_label`, `size_bytes`, `loaded`, `vram_bytes`, `last_success` |
+| `GET /api/knowledge/status/` | `store` (`state`, `points`, `embedding_model`, `dim`, `path`), `embedding` {model, device}, `documents` {ready, indexed, pending, failed, needs_indexing} |
+| `POST /api/knowledge/search/` | `{"query", "document_ids"?, "limit"? (≤20)}` → `method` (`hybrid` / `bm25`), `results[]` {document_id, document_name, page, section, score, text}. Searches all indexed documents; hits from deleted or changed documents are dropped |
+| `POST /api/knowledge/ask/` · `ask/stream/` | `{"question" \| "regenerate", "conversation_id"?, "document_ids"?, "think"?, "language"?}` → `answer`, `sources[]` {label, document_id, document_name, page, heading, classification, score, cited}, `basis` (`knowledge`, warnings), `context` (`retrieval_method`, `retrieval_query`, `sources_used`, `documents_used`), `conversation_id`. Stream: NDJSON like document Q&A |
+| `GET /api/knowledge/policy/` | Classification `levels[]` {id, description, may_leave_site}, `default`, `allow_override` |
+| `POST /api/documents/<id>/classification/` | `{"classification", "reason"?, "override"?}` → updated document; **400** lowering without reason / unknown level, **403** below the scanned level |
+| `GET /api/knowledge/egress-review/` | Per document: level, sections the egress guard would release / block and why; totals. Sends and audits nothing |
+| `GET /api/knowledge/policy-events/?event=&document=&limit=` | Audit trail: `classified`, `auto_escalated`, `changed`, `change_refused`, `egress_allowed`, `egress_blocked` |
+| `POST /api/knowledge/reindex/` | `{"document_ids"?, "force"?}` → **202**, queues (re)indexing on the document worker (default: only missing / out-of-date documents) |
 | `POST /api/dashboard/deep-check/` | `{"target": "ocr" \| "qwen3" \| "qwen-coder" \| "qwen-vl"}` → `success`, `detail`, `duration_ms` — runs OCR / a tiny generation; **loads the model**, only on explicit request, not counted as usage |
 
 ### 11.4 Admin
@@ -940,9 +992,24 @@ qwen3 without an image, VL with one.
 - **Recognition confidence** is PaddleOCR's own score (mean over lines), labelled as such — it is
   not measured accuracy.
 - **Long documents (retrieval):** when the text does not fit the context window, it is split into
-  ~1,200-character sections labelled with their page (`[p. N]`), ranked with **BM25** against the
-  question (local, no embeddings), and the best sections are sent in document order (the opening
-  section is kept). Summaries use evenly spread sections. The answer notes which pages were used.
+  ~1,200-character sections labelled with their page (`[p. N]`), ranked against the question, and
+  the best sections are sent in document order (the opening section is kept). Summaries use evenly
+  spread sections. The answer notes which pages were used and `context.retrieval_method`
+  (`hybrid` / `bm25` / `spread`).
+- **Local knowledge store (Qdrant Edge):** after extraction the worker embeds every section with
+  `qwen3-embedding:0.6b` (local Ollama, CPU, ~0.5 s/section) and stores it in an embedded
+  Qdrant Edge shard (`backend/knowledge_store/`, persists across restarts) with its document, page
+  and section number. Ranking is **semantic first** (cosine similarity), so "pump failure" finds
+  "P-101 stopped working"; sections containing an identifier from the question (tag, report number,
+  standard: any token with a digit) get a boost, and Qdrant's BM25 hits are added as candidates.
+  The index is used only while it matches the document's current text (fingerprint); otherwise,
+  or if the embedding model is down, in-memory BM25 is used. Indexing failures never block a
+  document. Measured on the bundled samples (18 labelled queries): paraphrased questions found the
+  right section first 8/11 (BM25 2/11); dense + BM25 rank fusion (RRF) was tried and rejected
+  (3–6/11: one shared word such as "machine" in "machine learning" outranked the right answer).
+- **Section headings:** a section that continues an earlier entry carries that entry's heading
+  (e.g. the date line of a shift-log entry) in the prompt — `(context: …)` — and in its embedding.
+  Fixed a wrong date in a live answer whose section started mid-entry.
 - **Answer checks** (`documents/verify.py`): numbers in the answer that appear nowhere in the
   document, and `[p. N]` citations to pages that were not given to the model, are shown as
   warnings.
@@ -1075,13 +1142,15 @@ counts, not accuracy.
 
 ```bash
 cd backend
-../env/bin/python manage.py test chat documents monitoring      # 188 tests
+../env/bin/python manage.py test chat documents monitoring knowledge   # 264 tests
 ```
 
 | App | Tests | Covers |
 |---|---|---|
 | `chat` | 97 | API contract, routing rules (paraphrases, pasted code, Hindi, vision → coder chain), image safety, context/history (earlier-topics note, token calibration), streaming (events, errors, disconnects, 406 regression, GPU slot release), regenerate, edit, language, pagination, rename, search, local-only endpoint rules, GPU queue, reliability instructions, basis and execution-claim check |
 | `documents` | 62 | Upload/extraction (sync and background), OCR paths (mocked), layout reconstruction, vision fallback, limits, retrieval (BM25, page labels), number/citation checks, visual page selection and overview batches, document conversations, streaming Q&A, regenerate, summary language, cleanup command |
+| `knowledge` | 76 | (+39 for knowledge base & classification) Section headings, knowledge-base Q&A (sources, citations, mis-citation heuristic, confidential notice, follow-ups, regenerate, stream, conversation kinds), content scan (findings, no values stored, clean plant text), classification (upload default/choice, escalation, change rules, refusal, override, index payload), egress guard (levels, per-section scan, database over forged payload, stale/unverifiable/deleted, whitelisted fields, audit vs review) |
+| `knowledge` (Phase 2) | 37 | Ranker seam, embedding client (local-only, CPU, batching, errors), Qdrant Edge store (semantic match without shared words, identifier boost, BM25 candidates, persistence, delete, model mismatch), indexing (state, failures, upload hook, delete signal, prune), hybrid vs BM25 in long-document Q&A, search/status/reindex API. Real Qdrant Edge in a temp directory; deterministic fake embedder |
 | `monitoring` | 29 | Usage recording (routes, failures, streams, disconnects, regenerations, OCR failures, no content stored), aggregation, trend, ratings API, backfill and prune commands, status/health (Ollama, OCR, GPU/power, database, disk), deep checks |
 
 **UI smoke test** (real models, headless Chrome; needs the backend, Vite and Ollama running):
@@ -1231,7 +1300,8 @@ solved · **NOT** — still open · **BY DESIGN** — a deliberate property.
 | L13 | LAN security | PARTIAL | Restricts where model requests go; not full security |
 | L14/L12/L29 | Legacy settings, redirects | IMPLEMENTED | — |
 | L27 | Test-data cleanup | IMPLEMENTED | Manual command |
-| L28 | Context window / long documents | IMPLEMENTED | BM25 keyword retrieval (no semantic search); questions phrased with different words than the document can miss sections |
+| L28 | Context window / long documents | IMPLEMENTED | Semantic retrieval (local embeddings + Qdrant Edge), BM25 fallback, cross-document knowledge base with headings carried into sections |
+| L34 | Data classification | IMPLEMENTED | Levels, content scan, egress guard, audit trail. The scan has no rule for personal **names**; anyone on the LAN can change levels (no accounts yet) |
 | L32 | GitHub push | NOT | Needs repository write access (not a code issue) |
 | L33 | Authentication / access control | NOT | Out of scope for now: everything is visible to anyone on the LAN |
 | L34 | Token counts are estimates | IMPLEMENTED | Calibrated per model from Ollama's counts; still an estimate before the first request |
@@ -1331,7 +1401,7 @@ solved · **NOT** — still open · **BY DESIGN** — a deliberate property.
 ### Roadmap (future enhancements)
 - Authentication, roles, per-user usage, audit logging, HTTPS, production deployment
   (Gunicorn/Uvicorn + reverse proxy, a task queue for OCR).
-- Semantic retrieval (local embeddings) next to BM25; evaluation datasets with real plant documents.
+- Cross-document knowledge base Q&A, document classification, cloud knowledge source and controlled edge ↔ cloud sync; evaluation datasets with real plant documents.
 - Semantic / learned routing; agent frameworks.
 - Validation on real scans and handwriting; table structure with merged cells.
 - Sandboxed code execution so generated code can actually be tested.
@@ -1355,7 +1425,15 @@ cd backend
 ../env/bin/python manage.py backfill_usage --apply
 ../env/bin/python manage.py prune_usage                            # dry run: rows older than USAGE_RETENTION_DAYS
 ../env/bin/python manage.py prune_usage --days 90 --apply
+../env/bin/python manage.py index_documents                        # index missing / out-of-date documents
+../env/bin/python manage.py index_documents --rebuild              # after changing EMBEDDING_MODEL
+../env/bin/python manage.py index_documents --prune                # drop sections of deleted documents
+../env/bin/python manage.py scan_documents                         # content scan for documents uploaded earlier
+../env/bin/python manage.py search_knowledge "pump failure"        # semantic search across documents
 ```
+
+The knowledge store can be opened by one process at a time: while the server runs, use
+`/api/knowledge/reindex/` and `/api/knowledge/search/` instead of the two knowledge commands.
 
 All cleanup commands are **dry runs unless `--yes` / `--apply` is given**.
 
@@ -1413,7 +1491,7 @@ Dj/
 │   │   ├── ocr.py                # PaddleOCR processor (CPU), layout heuristic, languages
 │   │   ├── processing.py         # chat-image OCR, page rendering, page selection, overview batches
 │   │   ├── jobs.py               # background extraction worker
-│   │   ├── retrieval.py          # page-labelled sections, BM25 ranking
+│   │   ├── retrieval.py          # page-labelled sections, ranker seam, BM25
 │   │   ├── verify.py             # number and citation checks
 │   │   ├── services.py           # document Q&A / summary (router + execution layer)
 │   │   ├── generators.py         # DOCX report
@@ -1428,6 +1506,18 @@ Dj/
 │       ├── views.py, urls.py, admin.py
 │       ├── management/commands/  # backfill_usage.py, prune_usage.py
 │       ├── migrations/
+│       └── tests.py
+│   └── knowledge/
+│       ├── embeddings.py         # local embeddings via Ollama /api/embed (CPU by default)
+│       ├── store.py              # Qdrant Edge shard: sections, search, delete, status
+│       ├── indexing.py           # document -> sections -> embeddings -> store; index state
+│       ├── retrievers.py         # QdrantHybridRanker for documents/retrieval.build_context
+│       ├── qa.py                 # knowledge-base Q&A: sources [S#], checks, mis-citation heuristic
+│       ├── sensitivity.py        # content scan (markings, personal data, credentials, internal IPs)
+│       ├── policy.py             # classification rules, egress guard, egress review, audit
+│       ├── models.py             # PolicyEvent (audit trail)
+│       ├── search.py, views.py, urls.py, signals.py
+│       ├── management/commands/  # index_documents.py, search_knowledge.py, scan_documents.py
 │       └── tests.py
 ├── frontend/
 │   ├── index.html, package.json, vite.config.js

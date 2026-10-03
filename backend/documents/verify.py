@@ -30,7 +30,7 @@ def numbers_in(text):
 
 def check_numbers(answer, document_text, question=""):
     """Numbers in the answer that appear nowhere in the document (nor in the question)."""
-    cleaned = _CITATION.sub(" ", answer or "")
+    cleaned = _SOURCE.sub(" ", _CITATION.sub(" ", answer or ""))  # [p. 3] / [S2] are citations, not values
     cleaned = _LIST_MARKER.sub(" ", cleaned)  # "1. " list numbering is not a claim
     known = numbers_in(document_text) | numbers_in(question)
     missing = sorted(numbers_in(cleaned) - known, key=lambda v: (len(v), v))
@@ -43,6 +43,14 @@ def check_citations(answer, pages_available):
     if not pages_available:
         return sorted(cited)
     return sorted(cited - set(pages_available))
+
+
+_SOURCE = re.compile(r"\[S(\d{1,3})\]")
+
+
+def cited_sources(answer):
+    """Source labels cited as [S1], [S2] ... (knowledge-base answers), as numbers."""
+    return sorted({int(n) for n in _SOURCE.findall(answer or "")})
 
 
 def cited_pages(answer):

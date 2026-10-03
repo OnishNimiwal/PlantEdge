@@ -33,6 +33,7 @@ CORE = (
 
 NOT_IN_DOCUMENT = "I could not find this information in the provided document."
 NOT_IN_IMAGE = "This cannot be determined from the provided image."
+NOT_IN_KNOWLEDGE = "I could not find this information in the indexed documents."
 
 MODES = {
     "general": (
@@ -43,6 +44,12 @@ MODES = {
         "Answer only from the supplied document content, not from general knowledge; never fill gaps or invent "
         f"values. If the answer is not in it, say exactly: \"{NOT_IN_DOCUMENT}\" Label any inference as such. "
         "When the content is split into sections marked [p. N], cite the page as [p. N] after each fact."
+    ),
+    "knowledge": (
+        "Answer only from the numbered sources supplied below, not from general knowledge; never fill gaps or "
+        f"invent values. If the answer is not in them, say exactly: \"{NOT_IN_KNOWLEDGE}\" Label any inference "
+        "as such. Cite the source label in square brackets, such as [S1], after each fact. Never cite pages "
+        "as [p. N]: the sources are labelled [S1], [S2] and so on."
     ),
     "image_text": (
         "The image was converted to text with local OCR; answer only from that text and point out values that "
@@ -128,6 +135,7 @@ _UNDETERMINED_WINDOW = 320
 
 LABELS = {
     "document": "Based on uploaded document",
+    "knowledge": "Based on indexed documents",
     "image": "Based on provided image",
     "image_text": "Based on text read from the provided image (OCR)",
     "general": "General AI response",
@@ -135,6 +143,7 @@ LABELS = {
 }
 UNDETERMINED_LABELS = {
     "document": "Not found in the provided document",
+    "knowledge": "Not found in the indexed documents",
     "image": "Cannot be determined from the provided image",
     "image_text": "Not found in the text read from the image",
 }

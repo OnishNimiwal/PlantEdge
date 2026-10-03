@@ -29,27 +29,44 @@ def active_ids():
         return set(_active)
 
 
+def _ensure_worker():
+    global _worker
+    if _worker is None or not _worker.is_alive():
+        _worker = threading.Thread(target=_worker_loop, name="document-worker", daemon=True)
+        _worker.start()
+
+
 def submit(doc_id, lang):
     """Queue a document for extraction (starts the worker on first use)."""
-    global _worker
     with _lock:
         _active.add(doc_id)
-        if _worker is None or not _worker.is_alive():
-            _worker = threading.Thread(target=_worker_loop, name="document-worker", daemon=True)
-            _worker.start()
-    _queue.put((doc_id, lang))
+        _ensure_worker()
+    _queue.put(("extract", doc_id, lang))
+
+
+def submit_index(doc_ids, force=False):
+    """Queue (re)indexing of ready documents into the local knowledge store (knowledge/indexing.py)."""
+    with _lock:
+        _ensure_worker()
+    for doc_id in doc_ids:
+        _queue.put(("index", doc_id, force))
 
 
 def _worker_loop():
     while True:
-        doc_id, lang = _queue.get()
+        kind, doc_id, arg = _queue.get()
         try:
-            process(doc_id, lang)
+            if kind == "index":
+                from knowledge.indexing import index_document
+                index_document(doc_id, force=arg)
+            else:
+                process(doc_id, arg)
         except Exception:
-            logger.exception("Document job crashed: doc_id=%s", doc_id)
+            logger.exception("Document job crashed: kind=%s doc_id=%s", kind, doc_id)
         finally:
-            with _lock:
-                _active.discard(doc_id)
+            if kind == "extract":
+                with _lock:
+                    _active.discard(doc_id)
             close_old_connections()
 
 
@@ -104,6 +121,13 @@ def process(doc_id, lang):
     )
     logger.info("Document job done: doc_id=%s method=%s pages=%s", doc_id, extraction["method"],
                 extraction["page_count"])
+    # Content scan first (it can only raise the classification), then the semantic index
+    # (embeddings -> local Qdrant Edge) so indexed sections carry the final level. The document
+    # is already usable: until indexing finishes (or if it fails) questions use in-memory BM25.
+    from knowledge.indexing import index_after_extraction
+    from knowledge.policy import apply_content_scan
+    apply_content_scan(Document.objects.get(pk=doc_id))
+    index_after_extraction(doc_id)
 
 
 def mark_interrupted(doc):

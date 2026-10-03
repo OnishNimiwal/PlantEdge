@@ -32,6 +32,9 @@ from .services import (
 )
 from django.conf import settings
 
+from knowledge.policy import classify_upload
+from knowledge.views import client_address
+
 from . import jobs
 from .extractors import IMAGE_SIGNATURES
 from .generators import generate_document_docx_report
@@ -79,6 +82,7 @@ class DocumentUploadView(APIView):
             extracted_text="",
             status=Document.STATUS_QUEUED,
         )
+        classify_upload(doc, serializer.validated_data.get("classification") or None, client=client_address(request))
 
         if getattr(settings, "DOCUMENT_ASYNC_PROCESSING", True):
             # Text extraction / OCR runs in the background; the client polls the document.

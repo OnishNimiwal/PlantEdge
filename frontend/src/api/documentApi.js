@@ -22,10 +22,11 @@ export async function getOCRConfig() {
  * fetch does not). onProgress(fraction 0..1) during transfer; the server then
  * extracts text / runs OCR before responding.
  */
-export function uploadDocument(file, ocrLang, onProgress) {
+export function uploadDocument(file, ocrLang, onProgress, classification) {
   const formData = new FormData();
   formData.append('file', file);
   if (ocrLang) formData.append('ocr_lang', ocrLang);
+  if (classification) formData.append('classification', classification);
   return new Promise((resolve) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${API_BASE}/api/documents/upload/`);

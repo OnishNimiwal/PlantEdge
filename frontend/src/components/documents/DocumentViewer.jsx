@@ -14,6 +14,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import DocumentQuestionBox from './DocumentQuestionBox';
+import ClassificationControl from './ClassificationControl';
 import Markdown from '../LazyMarkdown';
 import CopyButton from '../CopyButton';
 import { BasisIndicator } from '../MessageBubble';
@@ -21,7 +22,9 @@ import { modelMeta } from '../../utils/modelLabels';
 import { useI18n } from '../../utils/i18n';
 import { summarizeDocument, downloadDocumentReport } from '../../api/documentApi';
 
-export default function DocumentViewer({ document, onDelete, onImageClick, conversationId, onConversationsChanged }) {
+export default function DocumentViewer({
+  document, onDelete, onImageClick, conversationId, onConversationsChanged, onDocumentChanged,
+}) {
   const { t, lang } = useI18n();
   const [activeTab, setActiveTab] = useState('qa'); // 'qa' | 'summary' | 'text'
   const [summary, setSummary] = useState(null);
@@ -148,6 +151,7 @@ export default function DocumentViewer({ document, onDelete, onImageClick, conve
           </div>
 
           <div className="doc-meta-badges">
+            <ClassificationControl document={document} onChanged={onDocumentChanged} />
             <span className="meta-badge">
               <Calendar size={13} />
               {new Date(document.uploaded_at).toLocaleString(lang === 'hi' ? 'hi-IN' : undefined)}

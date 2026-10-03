@@ -12,6 +12,7 @@ urlpatterns = [
     path("api/models/warmup/", ModelWarmupAPIView.as_view(), name="models-warmup"),
     path("api/documents/", include("documents.urls")),
     path("api/dashboard/", include("monitoring.urls")),
+    path("api/knowledge/", include("knowledge.urls")),
 ]
 
 if settings.DEBUG:

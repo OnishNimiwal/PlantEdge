@@ -6,6 +6,7 @@ import { getConversation, getLatestDocumentConversation, warmUp } from '../../ap
 import { modelLabel } from '../../utils/modelLabels';
 import MessageBubble from '../MessageBubble';
 import MessageInput from '../MessageInput';
+import { CLASSIFICATION_LABELS } from './ClassificationChip';
 
 let seq = 0;
 const newId = () => `d${Date.now()}-${seq++}`;
@@ -19,7 +20,18 @@ function footnotes(res, t) {
   if (res.pages_not_covered > 0) {
     notes.push(t('{n} later page(s) were not analysed (limit per question). Ask about "pages N–M" to see them.', { n: res.pages_not_covered }));
   }
-  if (res.context?.retrieval) {
+  if (res.sources) {
+    // Knowledge-base answer: the cited sources (all given sources when nothing was cited).
+    if (!res.sources.length) notes.push(t('No indexed document matched this question.'));
+    const cited = res.sources.filter((s) => s.cited);
+    const shown = cited.length ? cited : res.sources;
+    shown.forEach((s) => {
+      notes.push(`[${s.label}] ${s.document_name}${s.page ? ` · p. ${s.page}` : ''}${s.heading ? ` · ${s.heading}` : ''} · ${t(CLASSIFICATION_LABELS[s.classification] || s.classification)}`);
+    });
+    if (cited.length && res.sources.length > cited.length) {
+      notes.push(t('{n} other source(s) were given to the model but not cited.', { n: res.sources.length - cited.length }));
+    }
+  } else if (res.context?.retrieval) {
     notes.push(res.context.pages?.length
       ? t('Long document: the {used} most relevant of {total} sections were used (pages {pages}).',
         { used: res.context.sections_used, total: res.context.sections_total, pages: res.context.pages.join(', ') })
@@ -32,8 +44,13 @@ function footnotes(res, t) {
   return notes;
 }
 
+/**
+ * Q&A thread for one document (default) or, with the optional props, for the whole
+ * knowledge base: `streamQuestion(body, onEvent)`, `loadLatest()` and the texts.
+ */
 export default function DocumentQuestionBox({
   documentId, documentName, onImageClick, initialConversationId, onConversationsChanged,
+  streamQuestion, loadLatest, emptyTitle, emptyHint, placeholder, footnote, newTitle,
 }) {
   const { t, lang } = useI18n();
   const [messages, setMessages] = useState([]);
@@ -50,7 +67,7 @@ export default function DocumentQuestionBox({
     let cancelled = false;
     const load = initialConversationId
       ? getConversation(initialConversationId)
-      : getLatestDocumentConversation(documentId);
+      : (loadLatest ? loadLatest() : getLatestDocumentConversation(documentId));
     load.then((conv) => {
       if (cancelled || !conv) return;
       setConversationId(conv.id);
@@ -62,6 +79,7 @@ export default function DocumentQuestionBox({
       })));
     });
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, initialConversationId]);
 
   useEffect(() => {
@@ -78,7 +96,8 @@ export default function DocumentQuestionBox({
       timer = null;
       replace(msgId, { status: 'streaming', text: acc });
     };
-    const final = await streamDocumentQuestion(documentId, { question, conversationId, regenerate, think, language: lang }, (ev) => {
+    const body = { question, conversationId, regenerate, think, language: lang };
+    const onEvent = (ev) => {
       if (ev.type === 'start') {
         if (ev.conversation_id) setConversationId(ev.conversation_id);
         replace(msgId, {
@@ -93,7 +112,10 @@ export default function DocumentQuestionBox({
         acc += ev.text;
         if (!timer) timer = setTimeout(flush, 50);
       }
-    });
+    };
+    const final = streamQuestion
+      ? await streamQuestion(body, onEvent)
+      : await streamDocumentQuestion(documentId, body, onEvent);
     clearTimeout(timer);
     setBusy(false);
     if (final.type === 'done' && final.answer) {
@@ -149,8 +171,8 @@ export default function DocumentQuestionBox({
         {messages.length === 0 ? (
           <div className="doc-qa-empty">
             <MessageSquareText size={28} />
-            <p>{t('Ask anything about')} <strong>{documentName}</strong></p>
-            <span>{t('Answers come from the document\'s text; visual questions ("what does the drawing on page 2 show?") use the vision model.')}</span>
+            {emptyTitle ? <p>{emptyTitle}</p> : <p>{t('Ask anything about')} <strong>{documentName}</strong></p>}
+            <span>{emptyHint || t('Answers come from the document\'s text; visual questions ("what does the drawing on page 2 show?") use the vision model.')}</span>
           </div>
         ) : (
           <div className="chat-thread is-compact">
@@ -174,7 +196,7 @@ export default function DocumentQuestionBox({
           className="icon-btn doc-qa-new"
           onClick={handleNew}
           disabled={busy || messages.length === 0}
-          title={t('Start a new Q&A conversation for this document')}
+          title={newTitle || t('Start a new Q&A conversation for this document')}
           aria-label={t('New Q&A conversation')}
         >
           <SquarePen size={17} />
@@ -186,8 +208,8 @@ export default function DocumentQuestionBox({
           showModelPicker={false}
           think={think}
           onThinkChange={setThink}
-          placeholder={t('Ask about {name}…', { name: documentName })}
-          footnote={t('Answers are generated locally from this document. Verify important values against the original.')}
+          placeholder={placeholder || t('Ask about {name}…', { name: documentName })}
+          footnote={footnote || t('Answers are generated locally from this document. Verify important values against the original.')}
         />
       </div>
     </div>

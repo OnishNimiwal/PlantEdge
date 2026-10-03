@@ -28,9 +28,11 @@ const BASIS_LABELS = {
   image_text: 'Based on text read from the provided image (OCR)',
   general: 'General AI response',
   code: 'Generated code — not executed',
+  knowledge: 'Based on indexed documents',
 };
 const UNDETERMINED_LABELS = {
   document: 'Not found in the provided document',
+  knowledge: 'Not found in the indexed documents',
   image: 'Cannot be determined from the provided image',
   image_text: 'Not found in the text read from the image',
 };
@@ -39,13 +41,16 @@ const WARNING_PATTERNS = [
   [/^Values? not found in the document: (.+)$/, 'Values not found in the document: {v}'],
   [/^Values? not found in the OCR text: (.+)$/, 'Values not found in the OCR text: {v}'],
   [/^Cited pages? not given to the model: (.+)$/, 'Cited pages not given to the model: {v}'],
+  [/^Values? not found in the sources: (.+)$/, 'Values not found in the sources: {v}'],
+  [/^Cited sources? not given to the model: (.+)$/, 'Cited sources not given to the model: {v}'],
+  [/^A statement cited to (S\d+) matches (S\d+) better/, 'A statement cited to {v} matches {w} better: check the citation'],
   [/^The answer says the code was run or tested/, 'The answer says the code was run or tested, but the workbench did not execute it.'],
 ];
 
 function translateWarning(t, w) {
   for (const [re, key] of WARNING_PATTERNS) {
     const m = w.match(re);
-    if (m) return t(key, { v: m[1] });
+    if (m) return t(key, { v: m[1], w: m[2] });
   }
   return w;
 }
@@ -53,7 +58,7 @@ function translateWarning(t, w) {
 export function BasisIndicator({ basis }) {
   const { t } = useI18n();
   if (!basis?.label) return null;
-  const grounded = ['document', 'image', 'image_text'].includes(basis.type);
+  const grounded = ['document', 'knowledge', 'image', 'image_text'].includes(basis.type);
   const Icon = basis.undetermined ? AlertTriangle : grounded ? CheckCircle2 : Info;
   const tone = basis.undetermined ? 'is-warn' : grounded ? 'is-grounded' : 'is-info';
   const known = (basis.undetermined ? UNDETERMINED_LABELS : BASIS_LABELS)[basis.type];

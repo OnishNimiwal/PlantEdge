@@ -31,6 +31,38 @@ class Document(models.Model):
     processing_error = models.CharField(max_length=300, blank=True)
     # Character offset where each PDF page starts in extracted_text (page-level citations).
     page_offsets = models.JSONField(default=list, blank=True)
+    # Local knowledge index (knowledge/indexing.py): sections embedded into Qdrant Edge.
+    # index_fingerprint = retrieval.sections_fingerprint() of the text that was indexed; the
+    # index is only used while it matches the current text, otherwise in-memory BM25 is used.
+    INDEX_NONE = ""
+    INDEX_PENDING = "pending"
+    INDEX_INDEXED = "indexed"
+    INDEX_FAILED = "failed"
+    INDEX_STATUS_CHOICES = [(INDEX_NONE, "Not indexed"), (INDEX_PENDING, "Pending"),
+                            (INDEX_INDEXED, "Indexed"), (INDEX_FAILED, "Failed")]
+    index_status = models.CharField(max_length=10, choices=INDEX_STATUS_CHOICES, default=INDEX_NONE, blank=True)
+    index_chunks = models.PositiveIntegerField(default=0)
+    index_model = models.CharField(max_length=100, blank=True)   # embedding model used
+    index_fingerprint = models.CharField(max_length=40, blank=True)
+    index_error = models.CharField(max_length=300, blank=True)
+    indexed_at = models.DateTimeField(null=True, blank=True)
+    # Data classification (knowledge/policy.py enforces it). Only PUBLIC and SHAREABLE content
+    # may ever leave this site; INTERNAL and CONFIDENTIAL stay on the edge device.
+    CLASS_PUBLIC = "public"
+    CLASS_SHAREABLE = "shareable"
+    CLASS_INTERNAL = "internal"
+    CLASS_CONFIDENTIAL = "confidential"
+    CLASSIFICATION_CHOICES = [(CLASS_PUBLIC, "Public"), (CLASS_SHAREABLE, "Shareable"),
+                              (CLASS_INTERNAL, "Internal"), (CLASS_CONFIDENTIAL, "Confidential")]
+    SOURCE_DEFAULT = "default"     # nobody chose: settings.DEFAULT_CLASSIFICATION
+    SOURCE_USER = "user"           # chosen at upload or changed later
+    SOURCE_DETECTED = "detected"   # raised automatically by the content scan (knowledge/sensitivity.py)
+    classification = models.CharField(max_length=12, choices=CLASSIFICATION_CHOICES, default=CLASS_INTERNAL,
+                                      db_index=True)
+    classification_source = models.CharField(max_length=10, default=SOURCE_DEFAULT)
+    # [{"type", "label", "count", "min_level"}] found by the content scan; matched values are not stored.
+    sensitivity_markers = models.JSONField(default=list, blank=True)
+    classified_at = models.DateTimeField(null=True, blank=True)
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -33,6 +33,9 @@ FORMAT_HINT = (
 )
 
 
+CONFIDENTIAL_NOTICE = "Based on a confidential document: do not share this answer outside the site."
+
+
 class OllamaServiceError(Exception):
     """Raised when the local model layer fails. str(exc) is safe to show to clients."""
     pass
@@ -53,9 +56,14 @@ def context_budget(model_tag: str, reserved_chars: int) -> int:
 
 
 def document_content(document, question, model_tag, reserved_chars):
-    """Whole document if it fits, otherwise the most relevant page-labelled sections (retrieval.py)."""
+    """
+    Whole document if it fits, otherwise the most relevant page-labelled sections (retrieval.py),
+    ranked by hybrid search in the local knowledge store when the document is indexed, else BM25.
+    """
+    from knowledge.retrievers import for_document
     return retrieval.build_context(document.extracted_text, question,
-                                   context_budget(model_tag, reserved_chars), document.page_offsets or None)
+                                   context_budget(model_tag, reserved_chars), document.page_offsets or None,
+                                   ranker=for_document(document))
 
 
 def fit_to_context(text: str, model_tag: str, reserved_chars: int) -> tuple:
@@ -267,6 +275,8 @@ def document_basis(document, answer, question, detail, pages_available):
         good = [p for p in verify.cited_pages(answer) if p not in bad]
         if good and document.file_type == "PDF":
             basis["detail"] = f"{document.original_name} — p. {', '.join(map(str, good))}"
+    if document.classification == document.CLASS_CONFIDENTIAL:
+        warnings.append(CONFIDENTIAL_NOTICE)
     basis["warnings"] = warnings
     return basis
 

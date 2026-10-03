@@ -4,6 +4,8 @@ Django settings for mrpl-ai-workbench project.
 
 from pathlib import Path
 import os
+import sys
+import tempfile
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -46,6 +48,7 @@ INSTALLED_APPS = [
     'chat',
     'documents',
     'monitoring',
+    'knowledge',
 ]
 
 MIDDLEWARE = [
@@ -233,6 +236,44 @@ OCR_IDLE_UNLOAD_SECONDS = int(os.getenv('OCR_IDLE_UNLOAD_SECONDS', '600'))
 OCR_DET_MODEL = os.getenv('OCR_DET_MODEL', '')
 OCR_REC_MODEL = os.getenv('OCR_REC_MODEL', '')
 
+# Local knowledge store (knowledge/): document sections embedded by a local Ollama embedding
+# model and stored in an embedded Qdrant Edge shard on this machine. Retrieval is hybrid
+# (semantic vectors + Qdrant BM25); documents that are not indexed fall back to in-memory BM25.
+KNOWLEDGE_INDEXING = _env_bool('KNOWLEDGE_INDEXING', True)
+KNOWLEDGE_STORE_DIR = Path(os.getenv('KNOWLEDGE_STORE_DIR', str(BASE_DIR / 'knowledge_store')))
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'qwen3-embedding:0.6b')
+# cpu = embed on the CPU (keeps the chat model in GPU memory); gpu = let Ollama place it
+# (faster, but on an 8 GB GPU it can evict the chat model and shares the request queue).
+EMBEDDING_DEVICE = os.getenv('EMBEDDING_DEVICE', 'cpu').strip().lower()
+# Added to a section's semantic score when it contains every identifier of the query
+# (tags such as P-2210B, report numbers, standards; partial matches get a share).
+KNOWLEDGE_IDENTIFIER_BOOST = float(os.getenv('KNOWLEDGE_IDENTIFIER_BOOST', '0.2'))
+EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE', '16'))
+EMBEDDING_TIMEOUT = int(os.getenv('EMBEDDING_TIMEOUT', '120'))
+EMBEDDING_KEEP_ALIVE = os.getenv('EMBEDDING_KEEP_ALIVE', '30m')
+# Instruction prefixed to search queries (instruction-aware models such as Qwen3-Embedding;
+# empty = embed the query as-is). Indexed sections are never prefixed.
+EMBEDDING_QUERY_INSTRUCTION = os.getenv(
+    'EMBEDDING_QUERY_INSTRUCTION',
+    'Given a question about industrial plant documents, retrieve passages that answer it',
+)
+
+# Sections given to the model for a knowledge-base question (knowledge/qa.py), within the context budget.
+KNOWLEDGE_QA_MAX_SOURCES = int(os.getenv('KNOWLEDGE_QA_MAX_SOURCES', '8'))
+
+# Data classification (knowledge/policy.py): public | shareable | internal | confidential.
+# Only public/shareable content may ever leave the site. Unclassified uploads get this level.
+DEFAULT_CLASSIFICATION = os.getenv('DEFAULT_CLASSIFICATION', 'internal').strip().lower()
+# Allow lowering a document below the level its content scan requires (audited). Off = refused.
+CLASSIFICATION_ALLOW_OVERRIDE = _env_bool('CLASSIFICATION_ALLOW_OVERRIDE', False)
+
+# `manage.py test`: never embed through the live Ollama server or write to the real store;
+# knowledge tests opt in with override_settings and a temporary directory.
+TESTING = len(sys.argv) > 1 and sys.argv[1] == 'test'
+if TESTING:
+    KNOWLEDGE_INDEXING = False
+    KNOWLEDGE_STORE_DIR = Path(tempfile.gettempdir()) / 'mrpl-knowledge-test-unused'
+
 # Server-side logging for the chat/model layer (metadata only, no prompts)
 LOGGING = {
     'version': 1,
@@ -247,5 +288,6 @@ LOGGING = {
         'chat': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
         'documents': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
         'monitoring': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
+        'knowledge': {'handlers': ['console'], 'level': 'INFO', 'propagate': False},
     },
 }

@@ -8,7 +8,8 @@ class DocumentListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Document
         fields = ['id', 'original_name', 'file_type', 'extraction_method', 'uploaded_at', 'text_length',
-                  'status', 'progress_done', 'progress_total']
+                  'status', 'progress_done', 'progress_total', 'index_status', 'classification',
+                  'classification_source', 'sensitivity_markers']
 
     def get_text_length(self, obj):
         return len(obj.extracted_text) if obj.extracted_text else 0
@@ -39,6 +40,14 @@ class DocumentDetailSerializer(serializers.ModelSerializer):
             'progress_done',
             'progress_total',
             'processing_error',
+            'index_status',
+            'index_chunks',
+            'index_error',
+            'indexed_at',
+            'classification',
+            'classification_source',
+            'sensitivity_markers',
+            'classified_at',
             'limits',
             'uploaded_at',
             'text_length',
@@ -65,6 +74,9 @@ class DocumentUploadSerializer(serializers.Serializer):
     file = serializers.FileField(required=True)
     # OCR language for scanned pages / images (must be in settings.OCR_ALLOWED_LANGS)
     ocr_lang = serializers.CharField(required=False, allow_blank=True)
+    # Data classification chosen at upload; empty = settings.DEFAULT_CLASSIFICATION
+    classification = serializers.ChoiceField(choices=[c for c, _ in Document.CLASSIFICATION_CHOICES],
+                                             required=False, allow_blank=True)
 
     def validate_ocr_lang(self, value):
         from .ocr import allowed_languages, default_language

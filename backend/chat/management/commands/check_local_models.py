@@ -22,6 +22,11 @@ class Command(BaseCommand):
             ok = model.ollama_name in installed
             missing += not ok
             self.stdout.write(f"{'OK     ' if ok else 'MISSING'} {model.id:12} {model.ollama_name}")
+        embedding = settings.EMBEDDING_MODEL
+        installed_names = installed | {name.removesuffix(":latest") for name in installed}
+        ok = embedding in installed_names
+        missing += not ok
+        self.stdout.write(f"{'OK     ' if ok else 'MISSING'} {'embedding':12} {embedding}")
         if missing:
             raise CommandError(f"{missing} registered model(s) missing. Install with: ollama pull <name>")
-        self.stdout.write(self.style.SUCCESS(f"All {len(list_models())} registered models are installed."))
+        self.stdout.write(self.style.SUCCESS(f"All {len(list_models())} registered models and the embedding model are installed."))

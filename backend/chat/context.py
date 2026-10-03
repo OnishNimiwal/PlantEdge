@@ -37,17 +37,20 @@ def _image_turns():
     return int(getattr(settings, "CONTEXT_IMAGE_TURNS", 8))
 
 
-def load(conversation_id=None, document=None, create=True):
+def load(conversation_id=None, document=None, create=True, kind=None):
     """Return the requested conversation, or a new one if the id is missing/unknown
-    (None instead when create=False)."""
+    (None instead when create=False). With `kind`, only a conversation of that kind is reused."""
     if conversation_id:
         try:
             conv = Conversation.objects.filter(id=uuid.UUID(str(conversation_id))).first()
         except ValueError:
             conv = None
-        if conv and (document is None or conv.document_id == document.id):
+        if conv and (document is None or conv.document_id == document.id) and (kind is None or conv.kind == kind):
             return conv
-    return Conversation.objects.create(document=document) if create else None
+    if not create:
+        return None
+    kind = kind or (Conversation.KIND_DOCUMENT if document is not None else Conversation.KIND_CHAT)
+    return Conversation.objects.create(document=document, kind=kind)
 
 
 def _recent(conv, limit, exclude_ids=()):
@@ -257,6 +260,7 @@ def serialize(conv) -> dict:
         "id": str(conv.id),
         "title": conv.title,
         "document_id": conv.document_id,
+        "kind": conv.kind,
         "updated_at": conv.updated_at,
         "messages": [
             {

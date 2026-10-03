@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, FileText, AlertCircle, Loader2, CheckCircle2 } from 'lucide-react';
 import { useI18n } from '../../utils/i18n';
 import { uploadDocument, getOCRConfig, getDocument } from '../../api/documentApi';
+import { getPolicy } from '../../api/knowledgeApi';
+import { CLASSIFICATION_LABELS } from './ClassificationChip';
 
 const POLL_MS = 1500;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -17,8 +19,14 @@ export default function DocumentUpload({ onUploadSuccess }) {
   const [ocrLang, setOcrLang] = useState('');
   const [progress, setProgress] = useState(0); // transfer fraction 0..1
   const [pages, setPages] = useState(null);     // {done, total} while the server extracts text
+  const [levels, setLevels] = useState([]);
+  const [classification, setClassificationChoice] = useState('');
 
   useEffect(() => {
+    getPolicy().then((p) => {
+      setLevels(p.levels || []);
+      setClassificationChoice(p.default || 'internal');
+    });
     getOCRConfig().then((cfg) => {
       setOcrLanguages(cfg.languages || []);
       setOcrLang(cfg.default || '');
@@ -55,7 +63,7 @@ export default function DocumentUpload({ onUploadSuccess }) {
     setProgress(0);
     setPages(null);
     try {
-      let res = await uploadDocument(file, ocrLang, setProgress);
+      let res = await uploadDocument(file, ocrLang, setProgress, classification);
       let doc = res?.document;
       // 202: text extraction / OCR runs in the background - poll until ready or failed.
       while (res?.success && doc && doc.status && !['ready', 'failed'].includes(doc.status)) {
@@ -66,10 +74,12 @@ export default function DocumentUpload({ onUploadSuccess }) {
       }
       if (res?.success && doc?.status !== 'failed') {
         const ocrPages = doc?.ocr_pages || 0;
+        const raised = doc?.classification_source === 'detected';
         setSuccessMsg(
-          ocrPages
+          (ocrPages
             ? t('"{name}" processed with local OCR ({n} page(s)).', { name: file.name, n: ocrPages })
-            : t('"{name}" uploaded and text extracted successfully!', { name: file.name })
+            : t('"{name}" uploaded and text extracted successfully!', { name: file.name }))
+          + (raised ? ` ${t('Classified {level}: sensitive content was found.', { level: t(CLASSIFICATION_LABELS[doc.classification]) })}` : '')
         );
         if (onUploadSuccess) onUploadSuccess(doc);
         setTimeout(() => setSuccessMsg(null), 4000);
@@ -181,6 +191,24 @@ export default function DocumentUpload({ onUploadSuccess }) {
           >
             {ocrLanguages.map((l) => (
               <option key={l.code} value={l.code}>{l.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {levels.length > 0 && (
+        <label className="ocr-lang-row" title={t('Only Public and Shareable documents may ever leave this site. The content scan can raise this level.')}>
+          <span>{t('Classification')}</span>
+          <select
+            className="model-select"
+            value={classification}
+            onChange={(e) => setClassificationChoice(e.target.value)}
+            disabled={isUploading}
+          >
+            {levels.map((l) => (
+              <option key={l.id} value={l.id}>
+                {t(CLASSIFICATION_LABELS[l.id] || l.id)}{l.may_leave_site ? '' : ` · ${t('stays on site')}`}
+              </option>
             ))}
           </select>
         </label>

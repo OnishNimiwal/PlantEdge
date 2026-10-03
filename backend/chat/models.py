@@ -2,7 +2,8 @@
 Conversation state (backend is the source of truth; the browser only keeps the id).
 
 Conversation -> ChatMessage (user / assistant turns) -> ChatAttachment (images).
-A conversation may be linked to a Document for Document Assistant Q&A.
+A conversation may be linked to a Document for Document Assistant Q&A (kind "document"),
+or answer from the whole local knowledge base (kind "knowledge").
 """
 
 import os
@@ -14,7 +15,13 @@ from django.dispatch import receiver
 
 
 class Conversation(models.Model):
+    KIND_CHAT = "chat"
+    KIND_DOCUMENT = "document"      # Q&A about one document (document is set)
+    KIND_KNOWLEDGE = "knowledge"    # Q&A across the local knowledge base (knowledge/qa.py)
+    KIND_CHOICES = [(KIND_CHAT, "Chat"), (KIND_DOCUMENT, "Document Q&A"), (KIND_KNOWLEDGE, "Knowledge base Q&A")]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, default=KIND_CHAT, db_index=True)
     title = models.CharField(max_length=200, blank=True)
     document = models.ForeignKey(
         "documents.Document", null=True, blank=True, on_delete=models.CASCADE,
@@ -25,6 +32,11 @@ class Conversation(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
+
+    def save(self, *args, **kwargs):
+        if self.document_id and self.kind == self.KIND_CHAT:
+            self.kind = self.KIND_DOCUMENT  # a conversation about a document is never listed as chat
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.title or str(self.id)

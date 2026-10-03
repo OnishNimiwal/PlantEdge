@@ -406,6 +406,7 @@ class ConversationListAPIView(APIView):
     """
     Recent conversations (newest first, up to 50).
       ?document=<id>  only that document's Q&A conversations
+      ?kind=knowledge knowledge base Q&A conversations
       ?scope=all      chat AND document conversations (default: chat only)
       ?q=<text>       search titles and message text (case-insensitive)
     """
@@ -416,8 +417,12 @@ class ConversationListAPIView(APIView):
         doc = request.query_params.get("document")
         if doc:
             qs = qs.filter(document_id=doc)
-        elif request.query_params.get("scope") != "all":
-            qs = qs.filter(document__isnull=True)
+        elif request.query_params.get("kind") == Conversation.KIND_KNOWLEDGE:
+            qs = qs.filter(kind=Conversation.KIND_KNOWLEDGE)
+        elif request.query_params.get("scope") == "all":
+            qs = qs.exclude(kind=Conversation.KIND_KNOWLEDGE)  # opened from the Knowledge base view
+        else:
+            qs = qs.filter(kind=Conversation.KIND_CHAT)
         q = (request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(Q(title__icontains=q) | Q(messages__content__icontains=q)).distinct()
@@ -433,6 +438,7 @@ class ConversationListAPIView(APIView):
                 "id": str(c.id), "title": c.title, "updated_at": c.updated_at,
                 "document_id": c.document_id,
                 "document_name": c.document.original_name if c.document_id else None,
+                "kind": c.kind,
             }
             for c in page
         ], "has_more": has_more, "offset": offset})
